@@ -1,0 +1,6 @@
+{
+  "name": "KBR Global Ventures | Premium Spices & Masale",
+  "description": "Authentic Indian Spices, Pure Masale, and traditional culinary seasonings from KBR Global Ventures.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
