@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Mail, Phone, Lock, User, ArrowRight, X, Loader2, CheckCircle2, Eye, EyeOff } from 'lucide-react';
-import { signInCustomer, signUpCustomer } from '../services/authService';
+import { Mail, Phone, Lock, User, ArrowRight, ArrowLeft, X, Loader2, CheckCircle2, Eye, EyeOff } from 'lucide-react';
+import { signInCustomer, signUpCustomer, sendPasswordResetEmail } from '../services/authService';
 import { UserSession } from '../types';
 
 interface CustomerLoginModalProps {
@@ -9,7 +9,7 @@ interface CustomerLoginModalProps {
   onLoginSuccess: (user: UserSession) => void;
 }
 
-type AuthMode = 'signin' | 'signup';
+type AuthMode = 'signin' | 'signup' | 'forgot';
 
 export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
   isOpen,
@@ -30,6 +30,7 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [resetEmailSent, setResetEmailSent] = useState(false);
 
   if (!isOpen) return null;
 
@@ -41,12 +42,14 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
     setConfirmPassword('');
     setErrorMessage('');
     setSuccessMessage('');
+    setResetEmailSent(false);
   };
 
   const handleSwitchMode = (newMode: AuthMode) => {
     setMode(newMode);
     setErrorMessage('');
     setSuccessMessage('');
+    setResetEmailSent(false);
   };
 
   // Sign In Handler
@@ -158,6 +161,30 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
     }
   };
 
+  // Forgot Password Handler
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      setErrorMessage('Please enter a valid email address.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      await sendPasswordResetEmail(cleanEmail);
+      setResetEmailSent(true);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to send password reset email. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto">
       <div 
@@ -165,14 +192,14 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
         role="dialog"
         aria-modal="true"
       >
-        {/* Subtle decorative background gradient */}
-        <div className="absolute top-0 right-0 -mt-10 -mr-10 w-32 h-32 bg-amber-400/20 rounded-full blur-2xl pointer-events-none" />
-        
-        {/* Dismiss Button */}
-        <button
+        {/* Background decorative spice glow */}
+        <div className="absolute -top-12 -right-12 w-32 h-32 bg-amber-400/20 rounded-full blur-2xl pointer-events-none"></div>
+        <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-red-600/10 rounded-full blur-2xl pointer-events-none"></div>
+
+        {/* Close Button */}
+        <button 
           onClick={onClose}
-          disabled={isLoading}
-          className="absolute top-4 right-4 p-2 min-w-[40px] min-h-[40px] text-gray-400 hover:text-gray-700 rounded-full hover:bg-gray-100 transition flex items-center justify-center cursor-pointer"
+          className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-700 rounded-full hover:bg-gray-100 transition z-20 cursor-pointer"
           aria-label="Close modal"
         >
           <X className="w-5 h-5" />
@@ -182,46 +209,60 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
         <div className="text-center mb-5 relative z-10">
           <div className="inline-flex p-3 rounded-full bg-amber-100/90 text-amber-800 mb-2.5 shadow-inner ring-4 ring-amber-50">
             <svg className="w-6 h-6 sm:w-7 sm:h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.4 19 2c1 2 2 4.1 2 9 0 4.4-3.6 8-8 8z" fill="#b45309" fillOpacity="0.2"></path>
-              <path d="M11 20c-3.3 0-6-2.7-6-6 0-3 2.5-5.5 5.5-5.5" stroke="#b45309"></path>
+              <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.4 19 2c1 2 2 4.1 2 9 0 4.4-3.6 8-8 8z" fill="#047857" fillOpacity="0.2"></path>
+              <path d="M11 20c-3.3 0-6-2.7-6-6 0-3 2.5-5.5 5.5-5.5" stroke="#047857"></path>
             </svg>
           </div>
           <h2 className="text-xl sm:text-2xl font-extrabold text-royal-950">
-            {mode === 'signin' ? 'Welcome to KBR Masale' : 'Create Customer Account'}
+            {mode === 'signin' && 'Welcome to KBR Masale'}
+            {mode === 'signup' && 'Create Customer Account'}
+            {mode === 'forgot' && 'Reset Account Password'}
           </h2>
           <p className="text-xs text-gray-600 mt-1 font-medium">
-            {mode === 'signin' 
-              ? 'Sign in to access your orders, saved spices, and express checkout' 
-              : 'Join KBR Global Ventures for pure heritage Indian spices'
-            }
+            {mode === 'signin' && 'Sign in to access your orders, saved spices, and express checkout'}
+            {mode === 'signup' && 'Join KBR Global Ventures for pure heritage Indian spices'}
+            {mode === 'forgot' && 'Enter your registered email address to receive a secure password reset link'}
           </p>
         </div>
 
-        {/* Tabs: Sign In / Create Account */}
-        <div className="flex bg-amber-50 p-1 rounded-2xl border border-amber-200/80 mb-5 relative z-10">
-          <button
-            type="button"
-            onClick={() => handleSwitchMode('signin')}
-            className={`flex-1 py-2 text-xs font-bold rounded-xl transition ${
-              mode === 'signin'
-                ? 'bg-amber-800 text-white shadow-xs'
-                : 'text-gray-600 hover:text-amber-900'
-            }`}
-          >
-            Sign In
-          </button>
-          <button
-            type="button"
-            onClick={() => handleSwitchMode('signup')}
-            className={`flex-1 py-2 text-xs font-bold rounded-xl transition ${
-              mode === 'signup'
-                ? 'bg-amber-800 text-white shadow-xs'
-                : 'text-gray-600 hover:text-amber-900'
-            }`}
-          >
-            Create Account
-          </button>
-        </div>
+        {/* Navigation Tabs or Back Link */}
+        {mode !== 'forgot' ? (
+          <div className="flex bg-amber-50 p-1 rounded-2xl border border-amber-200/80 mb-5 relative z-10">
+            <button
+              type="button"
+              onClick={() => handleSwitchMode('signin')}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition ${
+                mode === 'signin'
+                  ? 'bg-amber-800 text-white shadow-xs'
+                  : 'text-gray-600 hover:text-amber-900'
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSwitchMode('signup')}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition ${
+                mode === 'signup'
+                  ? 'bg-amber-800 text-white shadow-xs'
+                  : 'text-gray-600 hover:text-amber-900'
+              }`}
+            >
+              Create Account
+            </button>
+          </div>
+        ) : (
+          <div className="mb-4 relative z-10">
+            <button
+              type="button"
+              onClick={() => handleSwitchMode('signin')}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-800 hover:text-amber-950 transition cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Back to Sign In</span>
+            </button>
+          </div>
+        )}
 
         {/* Error Feedback Banner */}
         {errorMessage && (
@@ -238,8 +279,93 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
           </div>
         )}
 
-        {/* ================= SIGN IN FORM ================= */}
-        {mode === 'signin' ? (
+        {/* ================= FORGOT PASSWORD FORM ================= */}
+        {mode === 'forgot' ? (
+          resetEmailSent ? (
+            <div className="text-center py-4 space-y-4 relative z-10 animate-in fade-in duration-200">
+              <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto shadow-inner ring-4 ring-emerald-50">
+                <CheckCircle2 className="w-8 h-8 text-emerald-600" />
+              </div>
+              <div>
+                <h3 className="text-base sm:text-lg font-extrabold text-gray-900">
+                  Password reset link sent
+                </h3>
+                <p className="text-xs text-gray-600 mt-1.5 leading-relaxed max-w-xs mx-auto">
+                  Check your email and follow the link to create a new password.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetEmailSent(false);
+                    handleSwitchMode('signin');
+                  }}
+                  className="w-full bg-gradient-to-r from-amber-800 to-royal-900 hover:from-amber-900 hover:to-royal-950 text-white font-bold py-3 min-h-[44px] rounded-xl shadow-md transition transform active:scale-98 flex items-center justify-center gap-2 text-xs sm:text-sm cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>Back to Sign In</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form onSubmit={handleForgotPassword} className="space-y-4 relative z-10">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+                  Email Address *
+                </label>
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-400">
+                    <Mail className="w-4 h-4" />
+                  </span>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => {
+                      setErrorMessage('');
+                      setEmail(e.target.value);
+                    }}
+                    required
+                    placeholder="yourname@gmail.com"
+                    autoComplete="email"
+                    className="w-full pl-10 pr-4 py-2.5 sm:py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 focus:outline-none text-xs sm:text-sm transition"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-gradient-to-r from-amber-800 to-royal-900 hover:from-amber-900 hover:to-royal-950 text-white font-bold py-3 sm:py-3.5 min-h-[44px] rounded-xl shadow-md transition transform active:scale-98 flex items-center justify-center gap-2 text-xs sm:text-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Sending reset link...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Send Reset Link</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="text-center pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleSwitchMode('signin')}
+                  className="text-xs text-gray-500 hover:text-amber-800 font-semibold underline underline-offset-2 cursor-pointer"
+                >
+                  Back to Sign In
+                </button>
+              </div>
+            </form>
+          )
+        ) : mode === 'signin' ? (
+          /* ================= SIGN IN FORM ================= */
           <form onSubmit={handleSignIn} className="space-y-3.5 relative z-10">
             <div>
               <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
@@ -265,9 +391,18 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
-                Password *
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+                  Password *
+                </label>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchMode('forgot')}
+                  className="text-xs text-amber-800 hover:text-amber-950 font-semibold underline underline-offset-2 cursor-pointer"
+                >
+                  Forgot Password?
+                </button>
+              </div>
               <div className="relative">
                 <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-400">
                   <Lock className="w-4 h-4" />
@@ -289,6 +424,7 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 cursor-pointer"
                   tabIndex={-1}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>

@@ -38,6 +38,7 @@ import { ServicesView } from './components/ServicesView';
 import { ReviewsView } from './components/ReviewsView';
 import { StaticViews } from './components/StaticViews';
 import { CustomerLoginModal } from './components/CustomerLoginModal';
+import { ResetPasswordModal } from './components/ResetPasswordModal';
 import { AdminModal } from './components/AdminModal';
 import { AdminPanel } from './components/AdminPanel';
 
@@ -48,7 +49,7 @@ import {
   Headphones, 
   Search, 
   ArrowRight, 
-  Sparkles,
+  Sparkles, 
   CheckCircle,
   Filter,
   Lock
@@ -68,6 +69,7 @@ export default function App() {
 
   // Modals & Real Supabase Admin Role
   const [isCustomerLoginOpen, setIsCustomerLoginOpen] = useState(false);
+  const [isResetPasswordOpen, setIsResetPasswordOpen] = useState(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
 
@@ -160,10 +162,12 @@ export default function App() {
       hash.includes('type=signup') ||
       hash.includes('type=recovery') ||
       hash.includes('type=email_change') ||
+      hash.includes('reset-password') ||
       hash.includes('error=') ||
       hash.includes('error_description=') ||
       search.includes('access_token=') ||
-      search.includes('type=signup')
+      search.includes('type=signup') ||
+      search.includes('type=recovery')
     );
   };
 
@@ -214,12 +218,19 @@ export default function App() {
         console.error('Error restoring Supabase session:', error.message);
       }
       if (session?.user) {
-        await syncUserFromSession(session.user);
-        if (isAuthRedirect) {
-          cleanAuthUrl();
+        const isRecovery = window.location.hash.includes('type=recovery') || window.location.hash.includes('reset-password');
+        if (isRecovery) {
+          setIsResetPasswordOpen(true);
           setIsCustomerLoginOpen(false);
-          setCurrentPage('home');
-          showToast('Email confirmed successfully! Welcome to KBR Masale.');
+          cleanAuthUrl();
+        } else {
+          await syncUserFromSession(session.user);
+          if (isAuthRedirect) {
+            cleanAuthUrl();
+            setIsCustomerLoginOpen(false);
+            setCurrentPage('home');
+            showToast('Email confirmed successfully! Welcome to KBR Masale.');
+          }
         }
       } else if (!isAuthRedirect) {
         // Only set unauthenticated if not in the middle of processing an auth hash
@@ -229,19 +240,32 @@ export default function App() {
       console.error('Failed to get initial Supabase session:', err);
     });
 
-    // 3. Register ONE auth state listener handling INITIAL_SESSION, SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED
+    // 3. Register ONE auth state listener handling INITIAL_SESSION, SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, PASSWORD_RECOVERY
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       switch (event) {
+        case 'PASSWORD_RECOVERY':
+          setIsResetPasswordOpen(true);
+          setIsCustomerLoginOpen(false);
+          cleanAuthUrl();
+          break;
+
         case 'INITIAL_SESSION':
         case 'SIGNED_IN':
         case 'TOKEN_REFRESHED':
           if (session?.user) {
-            await syncUserFromSession(session.user);
-            if (hasAuthRedirectInUrl()) {
-              cleanAuthUrl();
+            const isRecovery = window.location.hash.includes('type=recovery') || window.location.hash.includes('reset-password');
+            if (isRecovery) {
+              setIsResetPasswordOpen(true);
               setIsCustomerLoginOpen(false);
-              setCurrentPage('home');
-              showToast('Email confirmed successfully! Welcome to KBR Masale.');
+              cleanAuthUrl();
+            } else {
+              await syncUserFromSession(session.user);
+              if (hasAuthRedirectInUrl()) {
+                cleanAuthUrl();
+                setIsCustomerLoginOpen(false);
+                setCurrentPage('home');
+                showToast('Email confirmed successfully! Welcome to KBR Masale.');
+              }
             }
           }
           break;
@@ -549,6 +573,17 @@ export default function App() {
         isOpen={isCustomerLoginOpen}
         onClose={() => setIsCustomerLoginOpen(false)}
         onLoginSuccess={handleCustomerLogin}
+      />
+
+      {/* Password Reset Modal (Supabase PASSWORD_RECOVERY flow) */}
+      <ResetPasswordModal
+        isOpen={isResetPasswordOpen}
+        onClose={() => setIsResetPasswordOpen(false)}
+        onSuccess={() => {
+          setIsResetPasswordOpen(false);
+          setIsCustomerLoginOpen(true);
+          showToast('Password updated! Please sign in with your new password.');
+        }}
       />
 
       {/* Admin Authentication Modal (Protected Gateway) */}

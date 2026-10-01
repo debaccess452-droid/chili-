@@ -321,3 +321,57 @@ export function buildUserSession(
     time: new Date().toLocaleTimeString(),
   };
 }
+
+/**
+ * Send password reset email to customer
+ */
+export async function sendPasswordResetEmail(email: string): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error(
+      'Unable to connect to the authentication service. Supabase environment variables are missing.'
+    );
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+    throw new Error('Please enter a valid email address.');
+  }
+
+  // Use dynamic browser origin so it functions on localhost and deployed Vercel domain
+  const redirectTo = `${window.location.origin}/`;
+
+  const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+    redirectTo,
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to send password reset email. Please try again.');
+  }
+}
+
+/**
+ * Update user password after password recovery
+ */
+export async function updateUserPassword(newPassword: string): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error(
+      'Unable to connect to the authentication service. Supabase environment variables are missing.'
+    );
+  }
+
+  if (!newPassword || newPassword.length < 6) {
+    throw new Error('Password must be at least 6 characters long.');
+  }
+
+  const { error } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+
+  if (error) {
+    if (error.message.toLowerCase().includes('same password')) {
+      throw new Error('New password must be different from previous password.');
+    }
+    throw new Error(error.message || 'Failed to update password. Please try again.');
+  }
+}
+
