@@ -14,13 +14,11 @@ import {
   getStoredQueries, 
   saveStoredQueries, 
   getStoredReviews, 
-  saveStoredReviews, 
-  getStoredCurrentUser, 
-  saveStoredCurrentUser,
-  getAdminAuthSession,
-  setAdminAuthSession
+  saveStoredReviews
 } from './utils/storage';
 import { SPICE_CATEGORIES } from './data/initialData';
+import { supabase } from './lib/supabase';
+import { signOutUser, checkIsAdmin, fetchUserProfile, buildUserSession } from './services/authService';
 
 // Components
 import { Navbar } from './components/Navbar';
@@ -47,7 +45,8 @@ import {
   ArrowRight, 
   Sparkles,
   CheckCircle,
-  Filter
+  Filter,
+  Lock
 } from 'lucide-react';
 
 export default function App() {
@@ -62,7 +61,7 @@ export default function App() {
   const [reviews, setReviews] = useState<Review[]>([]);
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
 
-  // Modals & Admin
+  // Modals & Real Supabase Admin Role
   const [isCustomerLoginOpen, setIsCustomerLoginOpen] = useState(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -79,7 +78,37 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Initialize data on mount
+  // Helper to synchronize Supabase user & role with frontend state
+  const syncUserFromSession = async (user: any | null) => {
+    if (!user) {
+      setCurrentUser(null);
+      setIsAdminAuthenticated(false);
+      return;
+    }
+
+    try {
+      const profile = await fetchUserProfile(user.id);
+      const isAdmin = await checkIsAdmin(user.id);
+      const sessionUser = buildUserSession(user, profile, isAdmin ? 'admin' : 'customer');
+      setCurrentUser(sessionUser);
+      setIsAdminAuthenticated(isAdmin);
+
+      // Keep user in local customers directory for admin display
+      setUsers((prev) => {
+        const exists = prev.some((u) => u.email === sessionUser.email);
+        if (!exists) {
+          const updated = [sessionUser, ...prev];
+          saveStoredUsers(updated);
+          return updated;
+        }
+        return prev;
+      });
+    } catch (err) {
+      console.error('Error synchronizing profile data:', err);
+    }
+  };
+
+  // Initialize data and Supabase session on mount
   useEffect(() => {
     setProducts(getStoredProducts());
     setCart(getStoredCart());
@@ -88,19 +117,51 @@ export default function App() {
     setUsers(getStoredUsers());
     setQueries(getStoredQueries());
     setReviews(getStoredReviews());
-    setCurrentUser(getStoredCurrentUser());
-    setIsAdminAuthenticated(getAdminAuthSession());
 
-    // Check URL hash for dedicated admin route or other page
-    const checkHashRoute = () => {
+    // 1. Restore initial Supabase session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        syncUserFromSession(session.user);
+      }
+    }).catch((err) => {
+      console.error('Failed to get initial Supabase session:', err);
+    });
+
+    // 2. Real-time auth state listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        await syncUserFromSession(session.user);
+      } else {
+        setCurrentUser(null);
+        setIsAdminAuthenticated(false);
+        if (window.location.hash.replace('#', '').toLowerCase() === 'admin') {
+          setCurrentPage('home');
+          window.location.hash = '';
+        }
+      }
+    });
+
+    // 3. Hash route navigation with real role verification
+    const checkHashRoute = async () => {
       const hash = window.location.hash.replace('#', '').toLowerCase();
       if (hash === 'admin') {
-        const authed = getAdminAuthSession();
-        if (authed) {
-          setCurrentPage('admin');
-        } else {
-          setIsAdminModalOpen(true);
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const isAdmin = await checkIsAdmin(session.user.id);
+          if (isAdmin) {
+            setIsAdminAuthenticated(true);
+            setCurrentPage('admin');
+            return;
+          } else {
+            showToast('Access Denied: You do not have administrator authorization.');
+            setCurrentPage('home');
+            window.location.hash = '';
+            return;
+          }
         }
+        setIsAdminModalOpen(true);
+        setCurrentPage('home');
+        window.location.hash = '';
       } else if (
         ['home', 'products', 'cart', 'checkout', 'orders', 'wishlist', 'services', 'reviews', 'about', 'privacy', 'return'].includes(hash)
       ) {
@@ -111,32 +172,52 @@ export default function App() {
     checkHashRoute();
     window.addEventListener('hashchange', checkHashRoute);
 
-    // Keyboard shortcut for administrator access (Shift + A)
-    const handleKeyDown = (e: KeyboardEvent) => {
+    // 4. Keyboard shortcut for administrator access (Shift + A)
+    const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.shiftKey && (e.key === 'A' || e.key === 'a')) {
-        const authed = getAdminAuthSession();
-        if (authed) {
-          setCurrentPage('admin');
-        } else {
-          setIsAdminModalOpen(true);
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const isAdmin = await checkIsAdmin(session.user.id);
+          if (isAdmin) {
+            setIsAdminAuthenticated(true);
+            setCurrentPage('admin');
+            window.location.hash = 'admin';
+            return;
+          } else {
+            showToast('Access Denied: Your account does not have administrator authorization.');
+            return;
+          }
         }
+        setIsAdminModalOpen(true);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
+      subscription.unsubscribe();
       window.removeEventListener('hashchange', checkHashRoute);
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, []);
 
-  // Update hash when page changes
-  const handleSetPage = (page: PageId) => {
+  // Update hash when page changes with real admin protection
+  const handleSetPage = async (page: PageId) => {
     if (page === 'admin') {
-      if (!isAdminAuthenticated) {
-        setIsAdminModalOpen(true);
-        return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        const isAdmin = await checkIsAdmin(session.user.id);
+        if (isAdmin) {
+          setIsAdminAuthenticated(true);
+          setCurrentPage('admin');
+          window.location.hash = 'admin';
+          return;
+        } else {
+          showToast('Access Denied: Administrator role required.');
+          return;
+        }
       }
+      setIsAdminModalOpen(true);
+      return;
     }
     setCurrentPage(page);
     window.location.hash = page === 'home' ? '' : page;
@@ -306,28 +387,36 @@ export default function App() {
   // Customer Login Gateway
   const handleCustomerLogin = (user: UserSession) => {
     setCurrentUser(user);
-    saveStoredCurrentUser(user);
 
     // Register user in users directory if not already there
-    const exists = users.some((u) => u.phone === user.phone);
+    const exists = users.some((u) => u.phone === user.phone || u.email === user.email);
     if (!exists) {
       const updatedUsers = [user, ...users];
       setUsers(updatedUsers);
       saveStoredUsers(updatedUsers);
     }
-    showToast(`Welcome, ${user.email.split('@')[0]}!`);
+    showToast(`Welcome, ${user.fullName || user.email.split('@')[0]}!`);
   };
 
-  const handleLogoutCustomer = () => {
+  const handleLogoutCustomer = async () => {
+    try {
+      await signOutUser();
+    } catch (err) {
+      console.error('Error signing out:', err);
+    }
     setCurrentUser(null);
-    saveStoredCurrentUser(null);
-    showToast('Signed out of customer account.');
+    setIsAdminAuthenticated(false);
+    if (currentPage === 'admin') {
+      setCurrentPage('home');
+      window.location.hash = '';
+    }
+    showToast('Signed out successfully.');
   };
 
   // Admin Login Gateway
-  const handleAdminSuccess = () => {
+  const handleAdminSuccess = (adminSession: UserSession) => {
     setIsAdminAuthenticated(true);
-    setAdminAuthSession(true);
+    setCurrentUser(adminSession);
     setCurrentPage('admin');
     window.location.hash = 'admin';
     showToast('Super Admin authenticated successfully.');
@@ -380,7 +469,7 @@ export default function App() {
       <CustomerLoginModal
         isOpen={isCustomerLoginOpen}
         onClose={() => setIsCustomerLoginOpen(false)}
-        onLogin={handleCustomerLogin}
+        onLoginSuccess={handleCustomerLogin}
       />
 
       {/* Admin Authentication Modal (Protected Gateway) */}
@@ -687,6 +776,7 @@ export default function App() {
             onDeleteQuery={handleDeleteQuery}
             onDeleteReview={handleDeleteReview}
             onExitAdmin={handleExitAdmin}
+            onLogout={handleLogoutCustomer}
           />
         )}
 

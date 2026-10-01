@@ -38,6 +38,7 @@ interface AdminPanelProps {
   onDeleteQuery: (queryId: number) => void;
   onDeleteReview: (reviewId: number) => void;
   onExitAdmin: () => void;
+  onLogout?: () => void;
 }
 
 type AdminTab = 'products' | 'upload' | 'orders' | 'users' | 'queries' | 'reviews';
@@ -57,6 +58,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onDeleteQuery,
   onDeleteReview,
   onExitAdmin,
+  onLogout,
 }) => {
   const [currentTab, setCurrentTab] = useState<AdminTab>('orders');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -203,11 +205,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </button>
             <button
               onClick={onExitAdmin}
-              className="flex-1 sm:flex-none bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 border border-gray-300 transition"
+              className="flex-1 sm:flex-none bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 border border-gray-300 transition cursor-pointer"
+              title="Return to customer store"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span>Exit Admin</span>
+              <span>Back to Store</span>
             </button>
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                className="flex-1 sm:flex-none bg-red-50 hover:bg-red-100 text-red-900 font-bold px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 border border-red-200 transition cursor-pointer"
+                title="Sign out of Admin Session"
+              >
+                <LogOut className="w-3.5 h-3.5 text-red-700" />
+                <span>Admin Logout</span>
+              </button>
+            )}
           </div>
         </div>
 

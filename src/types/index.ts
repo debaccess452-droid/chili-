@@ -45,10 +45,25 @@ export interface Order {
   status: 'Pending' | 'Confirmed' | 'Delivered' | 'Cancelled';
 }
 
+export interface UserProfile {
+  id: string;
+  full_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  avatar_url?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type AppRole = 'customer' | 'admin';
+
 export interface UserSession {
+  id?: string;
   phone: string;
   email: string;
-  time: string;
+  fullName?: string;
+  role?: AppRole;
+  time?: string;
 }
 
 export interface Review {

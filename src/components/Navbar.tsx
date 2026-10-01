@@ -156,7 +156,9 @@ export const Navbar: React.FC<NavbarProps> = ({
             {currentUser ? (
               <div className="hidden md:flex items-center bg-royal-900 border border-amber-500/30 rounded-full pl-2.5 pr-1.5 py-0.5 text-xs text-amber-300">
                 <User className="w-3.5 h-3.5 text-amber-400 mr-1.5 shrink-0" />
-                <span className="font-semibold max-w-[100px] truncate">{currentUser.email.split('@')[0]}</span>
+                <span className="font-semibold max-w-[120px] truncate">
+                  {currentUser.fullName || currentUser.email.split('@')[0]}
+                </span>
                 <button 
                   onClick={onLogoutCustomer}
                   title="Sign out"

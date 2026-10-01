@@ -9,8 +9,6 @@ const KEYS = {
   USERS: 'kbr_users_v2',
   QUERIES: 'customerQueries', // Same key used in original code
   REVIEWS: 'kbr_reviews_v2',
-  CURRENT_USER: 'kbr_current_user_v2',
-  ADMIN_AUTH: 'kbr_admin_auth_v2',
 };
 
 export const getStoredProducts = (): Product[] => {
@@ -139,46 +137,5 @@ export const saveStoredReviews = (reviews: Review[]): void => {
     localStorage.setItem(KEYS.REVIEWS, JSON.stringify(reviews));
   } catch (err) {
     console.error('Error saving reviews', err);
-  }
-};
-
-export const getStoredCurrentUser = (): UserSession | null => {
-  try {
-    const raw = localStorage.getItem(KEYS.CURRENT_USER);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-};
-
-export const saveStoredCurrentUser = (user: UserSession | null): void => {
-  try {
-    if (user) {
-      localStorage.setItem(KEYS.CURRENT_USER, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(KEYS.CURRENT_USER);
-    }
-  } catch (err) {
-    console.error('Error saving current user', err);
-  }
-};
-
-export const getAdminAuthSession = (): boolean => {
-  try {
-    return localStorage.getItem(KEYS.ADMIN_AUTH) === 'true';
-  } catch {
-    return false;
-  }
-};
-
-export const setAdminAuthSession = (isAuthenticated: boolean): void => {
-  try {
-    if (isAuthenticated) {
-      localStorage.setItem(KEYS.ADMIN_AUTH, 'true');
-    } else {
-      localStorage.removeItem(KEYS.ADMIN_AUTH);
-    }
-  } catch (err) {
-    console.error('Error setting admin session', err);
   }
 };
