@@ -16,12 +16,13 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   isWishlisted,
 }) => {
   // Default to 100g or first variant
-  const defaultVariantIndex = product.variants.findIndex((v) => v.weight === '100g');
+  const variants = product.variants && product.variants.length > 0 ? product.variants : [{ weight: '100g', price: 50 }];
+  const defaultVariantIndex = variants.findIndex((v) => v.weight === '100g');
   const initialIndex = defaultVariantIndex !== -1 ? defaultVariantIndex : 0;
   const [selectedVariantIndex, setSelectedVariantIndex] = useState(initialIndex);
   const [addedAnimation, setAddedAnimation] = useState(false);
 
-  const currentVariant = product.variants[selectedVariantIndex] || product.variants[0] || { weight: '100g', price: product.salePrice || 70 };
+  const currentVariant = variants[selectedVariantIndex] || variants[0];
 
   const handleAddToCart = () => {
     if (!product.inStock) return;
@@ -118,10 +119,15 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           </div>
 
           {/* Dynamic Price Display */}
-          <div className="mt-2.5 flex items-baseline gap-2">
+          <div className="mt-2.5 flex items-baseline gap-2 flex-wrap">
             <span className="text-lg sm:text-xl font-extrabold text-red-900 tracking-tight">
               ₹{currentVariant.price}
             </span>
+            {currentVariant.originalPrice && currentVariant.originalPrice > currentVariant.price && (
+              <span className="text-xs text-gray-400 line-through">
+                ₹{currentVariant.originalPrice}
+              </span>
+            )}
             <span className="text-[11px] text-gray-500 font-medium">
               for {currentVariant.weight}
             </span>

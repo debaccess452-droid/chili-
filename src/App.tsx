@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { CartItem, CustomerQuery, Order, PageId, Product, Review, UserSession } from './types';
 import { 
-  getStoredProducts, 
   saveStoredProducts, 
   getStoredCart, 
   saveStoredCart, 
@@ -15,7 +14,6 @@ import {
   getStoredReviews, 
   saveStoredReviews
 } from './utils/storage';
-import { SPICE_CATEGORIES } from './data/initialData';
 import { supabase } from './lib/supabase';
 import { 
   signOutUser, 
@@ -24,6 +22,15 @@ import {
   fetchAllCustomerProfiles,
   buildUserSession 
 } from './services/authService';
+import { fetchProducts, fetchCategories } from './services/catalogService';
+import { 
+  fetchCart, 
+  addToCart, 
+  updateCartItemQuantity, 
+  removeCartItem, 
+  clearCart, 
+  mergeGuestCart 
+} from './services/cartService';
 
 // Components
 import { Navbar } from './components/Navbar';
@@ -52,13 +59,19 @@ import {
   Sparkles, 
   CheckCircle,
   Filter,
-  Lock
+  Lock,
+  Loader2,
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
 
 export default function App() {
   // State management
   const [currentPage, setCurrentPage] = useState<PageId>('home');
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<string[]>(['All Spices', 'Masala', 'Spices']);
+  const [isCatalogLoading, setIsCatalogLoading] = useState<boolean>(true);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [wishlist, setWishlist] = useState<(number | string)[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -91,6 +104,8 @@ export default function App() {
       setCurrentUser(null);
       setIsAdminAuthenticated(false);
       setUsers([]);
+      // Unauthenticated / logged out: restore guest cart from localStorage
+      setCart(getStoredCart());
       if (window.location.hash.replace('#', '').toLowerCase() === 'admin') {
         setCurrentPage('home');
         window.location.hash = '';
@@ -104,6 +119,21 @@ export default function App() {
       const sessionUser = buildUserSession(user, profile, isAdmin ? 'admin' : 'customer');
       setCurrentUser(sessionUser);
       setIsAdminAuthenticated(isAdmin);
+
+      // Authenticated customer: Supabase cart is the source of truth
+      try {
+        const guestItems = getStoredCart();
+        if (guestItems.length > 0) {
+          const mergedCart = await mergeGuestCart(user.id, guestItems);
+          setCart(mergedCart);
+          saveStoredCart([]); // Clear guest localStorage cart after safe merge
+        } else {
+          const customerCart = await fetchCart(user.id);
+          setCart(customerCart);
+        }
+      } catch (cartErr) {
+        console.error('Failed to sync customer cart from Supabase:', cartErr);
+      }
 
       if (isAdmin) {
         const customerProfiles = await fetchAllCustomerProfiles();
@@ -186,15 +216,36 @@ export default function App() {
     }
   };
 
+  // Load products and categories from Supabase database
+  const loadCatalog = useCallback(async () => {
+    setIsCatalogLoading(true);
+    setCatalogError(null);
+    try {
+      const [fetchedProducts, fetchedCategories] = await Promise.all([
+        fetchProducts(),
+        fetchCategories(),
+      ]);
+      setProducts(fetchedProducts);
+      setCategories(fetchedCategories);
+    } catch (err: any) {
+      console.error('Failed to load catalog from Supabase:', err);
+      setCatalogError('Unable to load our spice collection. Please try again.');
+    } finally {
+      setIsCatalogLoading(false);
+    }
+  }, []);
+
   // Initialize data and Supabase session on mount
   useEffect(() => {
     // 1. Load non-auth persistent state
-    setProducts(getStoredProducts());
     setCart(getStoredCart());
     setWishlist(getStoredWishlist());
     setOrders(getStoredOrders());
     setQueries(getStoredQueries());
     setReviews(getStoredReviews());
+
+    // 2. Load live catalog from Supabase
+    loadCatalog();
 
     const isAuthRedirect = hasAuthRedirectInUrl();
 
@@ -212,7 +263,7 @@ export default function App() {
       cleanAuthUrl();
     }
 
-    // 2. Initial Supabase session retrieval on app startup
+    // 3. Initial Supabase session retrieval on app startup
     supabase.auth.getSession().then(async ({ data: { session }, error }) => {
       if (error) {
         console.error('Error restoring Supabase session:', error.message);
@@ -240,7 +291,7 @@ export default function App() {
       console.error('Failed to get initial Supabase session:', err);
     });
 
-    // 3. Register ONE auth state listener handling INITIAL_SESSION, SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, PASSWORD_RECOVERY
+    // 4. Register ONE auth state listener handling INITIAL_SESSION, SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, PASSWORD_RECOVERY
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       switch (event) {
         case 'PASSWORD_RECOVERY':
@@ -285,7 +336,7 @@ export default function App() {
       }
     });
 
-    // 4. Hash route navigation with real role verification
+    // 5. Hash route navigation with real role verification
     const checkHashRoute = async () => {
       const rawHash = window.location.hash;
       // Do not treat auth redirect hashes as page routes
@@ -306,7 +357,7 @@ export default function App() {
     checkHashRoute();
     window.addEventListener('hashchange', checkHashRoute);
 
-    // 5. Keyboard shortcut for administrator access (Shift + A)
+    // 6. Keyboard shortcut for administrator access (Shift + A)
     const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.shiftKey && (e.key === 'A' || e.key === 'a')) {
         await requestAdminAccess();
@@ -319,7 +370,7 @@ export default function App() {
       window.removeEventListener('hashchange', checkHashRoute);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [syncUserFromSession, requestAdminAccess]);
+  }, [syncUserFromSession, requestAdminAccess, loadCatalog]);
 
   // Update hash when page changes with real admin protection
   const handleSetPage = async (page: PageId) => {
@@ -365,9 +416,43 @@ export default function App() {
   };
 
   // Cart operations
-  const handleAddToCart = (product: Product, selectedWeight: string, price: number) => {
+  const handleAddToCart = async (product: Product, selectedWeight: string, price: number) => {
+    if (currentUser?.id) {
+      try {
+        const variant = product.variants.find((v) => v.weight === selectedWeight);
+        let variantId = variant?.id;
+
+        if (!variantId && typeof product.id === 'string') {
+          const { data: vData } = await supabase
+            .from('product_variants')
+            .select('id')
+            .eq('product_id', product.id)
+            .eq('weight', selectedWeight)
+            .maybeSingle();
+          if (vData?.id) {
+            variantId = vData.id;
+          }
+        }
+
+        if (!variantId) {
+          showToast('Unable to add this item: variant not found.');
+          return;
+        }
+
+        const updatedCart = await addToCart(currentUser.id, String(product.id), variantId, 1);
+        setCart(updatedCart);
+        showToast(`Added ${product.name} (${selectedWeight}) to cart`);
+      } catch (err: any) {
+        console.error('Failed to add to cart:', err);
+        showToast(err.message || 'Unable to add this item to your cart. Please try again.');
+      }
+      return;
+    }
+
+    // Guest Cart
     const cartItemId = `${product.id}-${selectedWeight}`;
     const existingIndex = cart.findIndex((item) => item.cartItemId === cartItemId);
+    const variant = product.variants.find((v) => v.weight === selectedWeight);
 
     let updatedCart: CartItem[];
     if (existingIndex > -1) {
@@ -379,6 +464,7 @@ export default function App() {
         {
           cartItemId,
           id: product.id,
+          variantId: variant?.id,
           name: product.name,
           weight: selectedWeight,
           price,
@@ -392,19 +478,49 @@ export default function App() {
     showToast(`Added ${product.name} (${selectedWeight}) to cart`);
   };
 
-  const handleUpdateQty = (cartItemId: string, delta: number) => {
-    let updatedCart = cart.map((item) => {
-      if (item.cartItemId === cartItemId) {
-        return { ...item, qty: item.qty + delta };
+  const handleUpdateQty = async (cartItemId: string, delta: number) => {
+    const item = cart.find((i) => i.cartItemId === cartItemId);
+    if (!item) return;
+
+    const newQty = item.qty + delta;
+
+    if (currentUser?.id) {
+      try {
+        const updatedCart = await updateCartItemQuantity(currentUser.id, cartItemId, newQty);
+        setCart(updatedCart);
+      } catch (err: any) {
+        console.error('Failed to update cart quantity:', err);
+        showToast(err.message || 'Unable to update your cart. Please try again.');
       }
-      return item;
+      return;
+    }
+
+    // Guest Cart
+    let updatedCart = cart.map((i) => {
+      if (i.cartItemId === cartItemId) {
+        return { ...i, qty: i.qty + delta };
+      }
+      return i;
     });
-    updatedCart = updatedCart.filter((item) => item.qty > 0);
+    updatedCart = updatedCart.filter((i) => i.qty > 0);
     setCart(updatedCart);
     saveStoredCart(updatedCart);
   };
 
-  const handleRemoveFromCart = (cartItemId: string) => {
+  const handleRemoveFromCart = async (cartItemId: string) => {
+    if (currentUser?.id) {
+      try {
+        const updatedCart = await removeCartItem(currentUser.id, cartItemId);
+        setCart(updatedCart);
+        showToast('Item removed from cart.');
+      } catch (err: any) {
+        console.error('Failed to remove item from cart:', err);
+        showToast(err.message || 'Unable to remove this item. Please try again.');
+      }
+      return;
+    }
+
+    // Guest Cart
     const updatedCart = cart.filter((item) => item.cartItemId !== cartItemId);
     setCart(updatedCart);
     saveStoredCart(updatedCart);
@@ -426,10 +542,18 @@ export default function App() {
   };
 
   // Orders
-  const handlePlaceOrder = (newOrder: Order) => {
+  const handlePlaceOrder = async (newOrder: Order) => {
     const updatedOrders = [newOrder, ...orders];
     setOrders(updatedOrders);
     saveStoredOrders(updatedOrders);
+
+    if (currentUser?.id) {
+      try {
+        await clearCart(currentUser.id);
+      } catch (err) {
+        console.error('Failed to clear Supabase cart after order:', err);
+      }
+    }
     setCart([]);
     saveStoredCart([]);
     handleSetPage('orders');
@@ -493,8 +617,23 @@ export default function App() {
   };
 
   // Customer Login Gateway
-  const handleCustomerLogin = (user: UserSession) => {
+  const handleCustomerLogin = async (user: UserSession) => {
     setCurrentUser(user);
+    if (user.id) {
+      try {
+        const guestItems = getStoredCart();
+        if (guestItems.length > 0) {
+          const mergedCart = await mergeGuestCart(user.id, guestItems);
+          setCart(mergedCart);
+          saveStoredCart([]);
+        } else {
+          const userCart = await fetchCart(user.id);
+          setCart(userCart);
+        }
+      } catch (err) {
+        console.error('Failed to load cart on login:', err);
+      }
+    }
     showToast(`Welcome, ${user.fullName || user.email.split('@')[0]}!`);
   };
 
@@ -507,6 +646,8 @@ export default function App() {
     setCurrentUser(null);
     setIsAdminAuthenticated(false);
     setUsers([]);
+    setCart([]);
+    saveStoredCart([]);
     if (currentPage === 'admin' || window.location.hash.replace('#', '').toLowerCase() === 'admin') {
       setCurrentPage('home');
       window.location.hash = '';
@@ -698,17 +839,43 @@ export default function App() {
               </div>
 
               {/* Responsive Product Grid: 1 col on mobile, 2 col on tablet, 3-4 col on desktop */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 sm:gap-5">
-                {featuredProducts.map((p) => (
-                  <ProductCard
-                    key={p.id}
-                    product={p}
-                    onAddToCart={handleAddToCart}
-                    onToggleWishlist={handleToggleWishlist}
-                    isWishlisted={wishlist.includes(p.id)}
-                  />
-                ))}
-              </div>
+              {isCatalogLoading ? (
+                <div className="py-12 text-center bg-white/70 rounded-2xl border border-amber-200/70 p-6">
+                  <div className="inline-flex p-3 rounded-full bg-amber-100 text-amber-800 mb-2.5 animate-spin">
+                    <Loader2 className="w-5 h-5" />
+                  </div>
+                  <p className="text-xs sm:text-sm font-bold text-gray-700">Loading featured masalas...</p>
+                  <p className="text-[11px] text-gray-500 mt-0.5">Fetching live inventory from Supabase</p>
+                </div>
+              ) : catalogError ? (
+                <div className="text-center py-8 bg-white rounded-2xl border border-red-200 p-6 max-w-md mx-auto">
+                  <AlertCircle className="w-6 h-6 text-red-600 mx-auto mb-2" />
+                  <p className="text-xs sm:text-sm font-bold text-gray-800">{catalogError}</p>
+                  <button
+                    onClick={loadCatalog}
+                    className="mt-3 px-4 py-1.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Retry</span>
+                  </button>
+                </div>
+              ) : featuredProducts.length === 0 ? (
+                <div className="text-center py-8 bg-white/70 rounded-2xl border border-amber-200/70 p-6">
+                  <p className="text-xs sm:text-sm font-semibold text-gray-600">No featured spices available at this time.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 sm:gap-5">
+                  {featuredProducts.map((p) => (
+                    <ProductCard
+                      key={p.id}
+                      product={p}
+                      onAddToCart={handleAddToCart}
+                      onToggleWishlist={handleToggleWishlist}
+                      isWishlisted={wishlist.includes(p.id)}
+                    />
+                  ))}
+                </div>
+              )}
             </section>
 
             {/* COMPANY HERITAGE & QUALITY SECTION (Readable width, comfortable padding, no blank sprawl) */}
@@ -769,11 +936,11 @@ export default function App() {
 
               {/* Category Pills */}
               <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-                {SPICE_CATEGORIES.map((cat) => (
+                {categories.map((cat) => (
                   <button
                     key={cat}
                     onClick={() => setSelectedCategory(cat)}
-                    className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition ${
+                    className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition cursor-pointer ${
                       selectedCategory === cat
                         ? 'bg-amber-800 text-white shadow-sm'
                         : 'bg-white text-gray-700 border border-amber-200 hover:bg-amber-50'
@@ -785,8 +952,49 @@ export default function App() {
               </div>
             </div>
 
-            {/* Grid */}
-            {filteredProducts.length === 0 ? (
+            {/* Grid & States */}
+            {isCatalogLoading ? (
+              <div className="py-20 text-center bg-white rounded-3xl border border-amber-200 p-8 max-w-md mx-auto">
+                <div className="inline-flex p-3 rounded-full bg-amber-100 text-amber-800 mb-3 animate-spin">
+                  <Loader2 className="w-6 h-6" />
+                </div>
+                <h3 className="text-sm sm:text-base font-extrabold text-royal-950">
+                  Loading our spice collection...
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Connecting to live inventory
+                </p>
+              </div>
+            ) : catalogError ? (
+              <div className="text-center py-16 bg-white rounded-3xl border border-red-200 p-8 max-w-md mx-auto shadow-xs">
+                <AlertCircle className="w-8 h-8 text-red-600 mx-auto mb-3" />
+                <h3 className="text-sm sm:text-base font-extrabold text-gray-900 mb-1">
+                  {catalogError}
+                </h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  Please check your connection and try again.
+                </p>
+                <button
+                  onClick={loadCatalog}
+                  className="px-5 py-2.5 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold shadow-md transition inline-flex items-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Retry Loading Spices</span>
+                </button>
+              </div>
+            ) : products.length === 0 ? (
+              <div className="text-center py-16 bg-white rounded-3xl border border-amber-200 p-8 max-w-md mx-auto">
+                <p className="text-sm font-bold text-gray-700">Our spice collection is currently being refreshed.</p>
+                <p className="text-xs text-gray-500 mt-1">Please check back in a few moments.</p>
+                <button
+                  onClick={loadCatalog}
+                  className="mt-4 px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Check Again</span>
+                </button>
+              </div>
+            ) : filteredProducts.length === 0 ? (
               <div className="text-center py-16 bg-white rounded-3xl border border-amber-200 p-6 max-w-md mx-auto">
                 <p className="text-sm font-bold text-gray-600">No spices found matching your search.</p>
                 <button
@@ -794,7 +1002,7 @@ export default function App() {
                     setSearchQuery('');
                     setSelectedCategory('All Spices');
                   }}
-                  className="mt-3 text-xs text-amber-800 underline font-semibold"
+                  className="mt-3 text-xs text-amber-800 underline font-semibold cursor-pointer"
                 >
                   Clear search and view all
                 </button>

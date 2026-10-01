@@ -1,6 +1,9 @@
 export interface ProductVariant {
+  id?: string;
   weight: string;
   price: number;
+  originalPrice?: number;
+  salePrice?: number;
 }
 
 export interface Product {
@@ -27,6 +30,8 @@ export interface CartItem {
   price: number;
   image: string;
   qty: number;
+  variantId?: string;
+  originalPrice?: number;
 }
 
 export interface Order {
