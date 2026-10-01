@@ -43,8 +43,8 @@ export const AdminModal: React.FC<AdminModalProps> = ({
       const res = await signInAdmin(cleanEmail, password);
       
       const adminSession: UserSession = {
-        id: res.user.id,
-        email: res.user.email || cleanEmail,
+        id: res.user?.id,
+        email: res.user?.email || cleanEmail,
         phone: res.profile?.phone || '',
         fullName: res.profile?.full_name || 'Super Admin',
         role: 'admin',

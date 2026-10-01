@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import type { User } from '@supabase/supabase-js';
 import { CartItem, CustomerQuery, Order, PageId, Product, Review, UserSession } from './types';
 import { 
   getStoredProducts, 
@@ -9,8 +10,6 @@ import {
   saveStoredWishlist, 
   getStoredOrders, 
   saveStoredOrders, 
-  getStoredUsers, 
-  saveStoredUsers, 
   getStoredQueries, 
   saveStoredQueries, 
   getStoredReviews, 
@@ -18,7 +17,13 @@ import {
 } from './utils/storage';
 import { SPICE_CATEGORIES } from './data/initialData';
 import { supabase } from './lib/supabase';
-import { signOutUser, checkIsAdmin, fetchUserProfile, buildUserSession } from './services/authService';
+import { 
+  signOutUser, 
+  checkIsAdmin, 
+  fetchUserProfile, 
+  fetchAllCustomerProfiles,
+  buildUserSession 
+} from './services/authService';
 
 // Components
 import { Navbar } from './components/Navbar';
@@ -79,10 +84,15 @@ export default function App() {
   };
 
   // Helper to synchronize Supabase user & role with frontend state
-  const syncUserFromSession = async (user: any | null) => {
+  const syncUserFromSession = useCallback(async (user: User | null) => {
     if (!user) {
       setCurrentUser(null);
       setIsAdminAuthenticated(false);
+      setUsers([]);
+      if (window.location.hash.replace('#', '').toLowerCase() === 'admin') {
+        setCurrentPage('home');
+        window.location.hash = '';
+      }
       return;
     }
 
@@ -93,75 +103,175 @@ export default function App() {
       setCurrentUser(sessionUser);
       setIsAdminAuthenticated(isAdmin);
 
-      // Keep user in local customers directory for admin display
-      setUsers((prev) => {
-        const exists = prev.some((u) => u.email === sessionUser.email);
-        if (!exists) {
-          const updated = [sessionUser, ...prev];
-          saveStoredUsers(updated);
-          return updated;
-        }
-        return prev;
-      });
-    } catch (err) {
-      console.error('Error synchronizing profile data:', err);
-    }
-  };
-
-  // Initialize data and Supabase session on mount
-  useEffect(() => {
-    setProducts(getStoredProducts());
-    setCart(getStoredCart());
-    setWishlist(getStoredWishlist());
-    setOrders(getStoredOrders());
-    setUsers(getStoredUsers());
-    setQueries(getStoredQueries());
-    setReviews(getStoredReviews());
-
-    // 1. Restore initial Supabase session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        syncUserFromSession(session.user);
-      }
-    }).catch((err) => {
-      console.error('Failed to get initial Supabase session:', err);
-    });
-
-    // 2. Real-time auth state listener
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session?.user) {
-        await syncUserFromSession(session.user);
+      if (isAdmin) {
+        const customerProfiles = await fetchAllCustomerProfiles();
+        setUsers(customerProfiles);
       } else {
-        setCurrentUser(null);
-        setIsAdminAuthenticated(false);
+        setUsers([]);
         if (window.location.hash.replace('#', '').toLowerCase() === 'admin') {
           setCurrentPage('home');
           window.location.hash = '';
         }
       }
-    });
+    } catch (err) {
+      console.error('Error synchronizing profile data:', err);
+    }
+  }, []);
 
-    // 3. Hash route navigation with real role verification
-    const checkHashRoute = async () => {
-      const hash = window.location.hash.replace('#', '').toLowerCase();
-      if (hash === 'admin') {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          const isAdmin = await checkIsAdmin(session.user.id);
-          if (isAdmin) {
-            setIsAdminAuthenticated(true);
-            setCurrentPage('admin');
-            return;
-          } else {
-            showToast('Access Denied: You do not have administrator authorization.');
-            setCurrentPage('home');
-            window.location.hash = '';
-            return;
-          }
-        }
+  // Centralized Admin Access Verification against Supabase RBAC
+  const requestAdminAccess = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
         setIsAdminModalOpen(true);
+        if (window.location.hash.replace('#', '').toLowerCase() === 'admin') {
+          setCurrentPage('home');
+          window.location.hash = '';
+        }
+        return;
+      }
+
+      const isAdmin = await checkIsAdmin(session.user.id);
+      if (isAdmin) {
+        setIsAdminAuthenticated(true);
+        setCurrentPage('admin');
+        window.location.hash = 'admin';
+        const customerProfiles = await fetchAllCustomerProfiles();
+        setUsers(customerProfiles);
+      } else {
+        setIsAdminAuthenticated(false);
+        showToast('Access Denied: Your account does not have administrator authorization.');
         setCurrentPage('home');
         window.location.hash = '';
+      }
+    } catch (err) {
+      console.error('Error verifying admin authorization:', err);
+      showToast('Unable to connect to the authentication service.');
+    }
+  }, []);
+
+  // Helper to detect if the current URL has Supabase Auth redirect parameters in hash or search
+  const hasAuthRedirectInUrl = (): boolean => {
+    const hash = window.location.hash || '';
+    const search = window.location.search || '';
+    return (
+      hash.includes('access_token=') ||
+      hash.includes('refresh_token=') ||
+      hash.includes('type=signup') ||
+      hash.includes('type=recovery') ||
+      hash.includes('type=email_change') ||
+      hash.includes('error=') ||
+      hash.includes('error_description=') ||
+      search.includes('access_token=') ||
+      search.includes('type=signup')
+    );
+  };
+
+  // Clean auth redirect tokens safely using the History API without losing pathname/search
+  const cleanAuthUrl = (): void => {
+    try {
+      if (hasAuthRedirectInUrl()) {
+        window.history.replaceState(
+          {},
+          document.title,
+          window.location.pathname + window.location.search
+        );
+      }
+    } catch (err) {
+      console.error('Error cleaning auth URL hash:', err);
+    }
+  };
+
+  // Initialize data and Supabase session on mount
+  useEffect(() => {
+    // 1. Load non-auth persistent state
+    setProducts(getStoredProducts());
+    setCart(getStoredCart());
+    setWishlist(getStoredWishlist());
+    setOrders(getStoredOrders());
+    setQueries(getStoredQueries());
+    setReviews(getStoredReviews());
+
+    const isAuthRedirect = hasAuthRedirectInUrl();
+
+    // Check for error_description in URL hash (e.g. expired confirmation link)
+    if (window.location.hash.includes('error_description=')) {
+      try {
+        const params = new URLSearchParams(window.location.hash.replace('#', '?'));
+        const errorDesc = params.get('error_description');
+        if (errorDesc) {
+          showToast(decodeURIComponent(errorDesc.replace(/\+/g, ' ')));
+        }
+      } catch {
+        showToast('Authentication error. Please sign in again.');
+      }
+      cleanAuthUrl();
+    }
+
+    // 2. Initial Supabase session retrieval on app startup
+    supabase.auth.getSession().then(async ({ data: { session }, error }) => {
+      if (error) {
+        console.error('Error restoring Supabase session:', error.message);
+      }
+      if (session?.user) {
+        await syncUserFromSession(session.user);
+        if (isAuthRedirect) {
+          cleanAuthUrl();
+          setIsCustomerLoginOpen(false);
+          setCurrentPage('home');
+          showToast('Email confirmed successfully! Welcome to KBR Masale.');
+        }
+      } else if (!isAuthRedirect) {
+        // Only set unauthenticated if not in the middle of processing an auth hash
+        await syncUserFromSession(null);
+      }
+    }).catch((err) => {
+      console.error('Failed to get initial Supabase session:', err);
+    });
+
+    // 3. Register ONE auth state listener handling INITIAL_SESSION, SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      switch (event) {
+        case 'INITIAL_SESSION':
+        case 'SIGNED_IN':
+        case 'TOKEN_REFRESHED':
+          if (session?.user) {
+            await syncUserFromSession(session.user);
+            if (hasAuthRedirectInUrl()) {
+              cleanAuthUrl();
+              setIsCustomerLoginOpen(false);
+              setCurrentPage('home');
+              showToast('Email confirmed successfully! Welcome to KBR Masale.');
+            }
+          }
+          break;
+
+        case 'SIGNED_OUT':
+          await syncUserFromSession(null);
+          cleanAuthUrl();
+          break;
+
+        default:
+          if (session?.user) {
+            await syncUserFromSession(session.user);
+          } else {
+            await syncUserFromSession(null);
+          }
+          break;
+      }
+    });
+
+    // 4. Hash route navigation with real role verification
+    const checkHashRoute = async () => {
+      const rawHash = window.location.hash;
+      // Do not treat auth redirect hashes as page routes
+      if (hasAuthRedirectInUrl()) {
+        return;
+      }
+
+      const hash = rawHash.replace('#', '').toLowerCase();
+      if (hash === 'admin') {
+        await requestAdminAccess();
       } else if (
         ['home', 'products', 'cart', 'checkout', 'orders', 'wishlist', 'services', 'reviews', 'about', 'privacy', 'return'].includes(hash)
       ) {
@@ -172,23 +282,10 @@ export default function App() {
     checkHashRoute();
     window.addEventListener('hashchange', checkHashRoute);
 
-    // 4. Keyboard shortcut for administrator access (Shift + A)
+    // 5. Keyboard shortcut for administrator access (Shift + A)
     const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.shiftKey && (e.key === 'A' || e.key === 'a')) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          const isAdmin = await checkIsAdmin(session.user.id);
-          if (isAdmin) {
-            setIsAdminAuthenticated(true);
-            setCurrentPage('admin');
-            window.location.hash = 'admin';
-            return;
-          } else {
-            showToast('Access Denied: Your account does not have administrator authorization.');
-            return;
-          }
-        }
-        setIsAdminModalOpen(true);
+        await requestAdminAccess();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -198,25 +295,12 @@ export default function App() {
       window.removeEventListener('hashchange', checkHashRoute);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, []);
+  }, [syncUserFromSession, requestAdminAccess]);
 
   // Update hash when page changes with real admin protection
   const handleSetPage = async (page: PageId) => {
     if (page === 'admin') {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        const isAdmin = await checkIsAdmin(session.user.id);
-        if (isAdmin) {
-          setIsAdminAuthenticated(true);
-          setCurrentPage('admin');
-          window.location.hash = 'admin';
-          return;
-        } else {
-          showToast('Access Denied: Administrator role required.');
-          return;
-        }
-      }
-      setIsAdminModalOpen(true);
+      await requestAdminAccess();
       return;
     }
     setCurrentPage(page);
@@ -387,14 +471,6 @@ export default function App() {
   // Customer Login Gateway
   const handleCustomerLogin = (user: UserSession) => {
     setCurrentUser(user);
-
-    // Register user in users directory if not already there
-    const exists = users.some((u) => u.phone === user.phone || u.email === user.email);
-    if (!exists) {
-      const updatedUsers = [user, ...users];
-      setUsers(updatedUsers);
-      saveStoredUsers(updatedUsers);
-    }
     showToast(`Welcome, ${user.fullName || user.email.split('@')[0]}!`);
   };
 
@@ -406,7 +482,8 @@ export default function App() {
     }
     setCurrentUser(null);
     setIsAdminAuthenticated(false);
-    if (currentPage === 'admin') {
+    setUsers([]);
+    if (currentPage === 'admin' || window.location.hash.replace('#', '').toLowerCase() === 'admin') {
       setCurrentPage('home');
       window.location.hash = '';
     }
@@ -414,11 +491,13 @@ export default function App() {
   };
 
   // Admin Login Gateway
-  const handleAdminSuccess = (adminSession: UserSession) => {
+  const handleAdminSuccess = async (adminSession: UserSession) => {
     setIsAdminAuthenticated(true);
     setCurrentUser(adminSession);
     setCurrentPage('admin');
     window.location.hash = 'admin';
+    const customerProfiles = await fetchAllCustomerProfiles();
+    setUsers(customerProfiles);
     showToast('Super Admin authenticated successfully.');
   };
 
@@ -790,13 +869,7 @@ export default function App() {
       {/* Main Responsive Footer (WITHOUT customer-visible Admin link) */}
       <Footer
         setCurrentPage={handleSetPage}
-        onAdminTrigger={() => {
-          if (isAdminAuthenticated) {
-            handleSetPage('admin');
-          } else {
-            setIsAdminModalOpen(true);
-          }
-        }}
+        onAdminTrigger={requestAdminAccess}
       />
 
     </div>

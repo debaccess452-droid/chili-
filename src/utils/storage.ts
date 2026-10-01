@@ -1,4 +1,4 @@
-import { CartItem, CustomerQuery, Order, Product, Review, UserSession } from '../types';
+import { CartItem, CustomerQuery, Order, Product, Review } from '../types';
 import { INITIAL_PRODUCTS, INITIAL_REVIEWS } from '../data/initialData';
 
 const KEYS = {
@@ -6,8 +6,7 @@ const KEYS = {
   CART: 'kbr_cart_v2',
   WISHLIST: 'kbr_wishlist_v2',
   ORDERS: 'kbr_orders_v2',
-  USERS: 'kbr_users_v2',
-  QUERIES: 'customerQueries', // Same key used in original code
+  QUERIES: 'customerQueries',
   REVIEWS: 'kbr_reviews_v2',
 };
 
@@ -82,23 +81,6 @@ export const saveStoredOrders = (orders: Order[]): void => {
     localStorage.setItem(KEYS.ORDERS, JSON.stringify(orders));
   } catch (err) {
     console.error('Error saving orders', err);
-  }
-};
-
-export const getStoredUsers = (): UserSession[] => {
-  try {
-    const raw = localStorage.getItem(KEYS.USERS);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-};
-
-export const saveStoredUsers = (users: UserSession[]): void => {
-  try {
-    localStorage.setItem(KEYS.USERS, JSON.stringify(users));
-  } catch (err) {
-    console.error('Error saving users', err);
   }
 };
 

@@ -18,7 +18,7 @@ if (!isSupabaseConfigured) {
   );
 }
 
-// Single reusable Supabase client instance
+// Single reusable Supabase client singleton
 export const supabase = createClient(
   supabaseUrl || 'https://placeholder.supabase.co',
   supabaseAnonKey || 'placeholder-anon-key',
@@ -27,7 +27,6 @@ export const supabase = createClient(
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: true,
-      storage: window.localStorage,
     },
   }
 );

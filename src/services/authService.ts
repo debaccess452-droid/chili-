@@ -1,4 +1,5 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import type { User, Session } from '@supabase/supabase-js';
 import { UserProfile, UserSession, AppRole } from '../types';
 
 export interface SignUpParams {
@@ -9,8 +10,8 @@ export interface SignUpParams {
 }
 
 export interface AuthResult {
-  session: any | null;
-  user: any | null;
+  session: Session | null;
+  user: User | null;
   profile: UserProfile | null;
   role: AppRole;
   requiresEmailConfirmation?: boolean;
@@ -27,7 +28,7 @@ export async function signUpCustomer({
 }: SignUpParams): Promise<AuthResult> {
   if (!isSupabaseConfigured) {
     throw new Error(
-      'Supabase is not configured. Please define VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.'
+      'Unable to connect to the authentication service. Supabase environment variables are missing.'
     );
   }
 
@@ -48,11 +49,17 @@ export async function signUpCustomer({
   });
 
   if (error) {
-    throw new Error(error.message);
+    if (error.message.toLowerCase().includes('already registered')) {
+      throw new Error('An account with this email already exists. Please sign in instead.');
+    }
+    if (error.message.toLowerCase().includes('password')) {
+      throw new Error('Password must be at least 6 characters long.');
+    }
+    throw new Error(error.message || 'Unable to connect to the authentication service.');
   }
 
   if (!data.user) {
-    throw new Error('Failed to create account. Please try again.');
+    throw new Error('Failed to create customer account. Please try again.');
   }
 
   // 2. Synchronize profile into `profiles` table
@@ -81,8 +88,14 @@ export async function signUpCustomer({
     if (upsertedProfile) {
       profile = upsertedProfile;
     }
-  } catch (err) {
-    console.warn('Could not upsert profile directly (handled by DB trigger or rules):', err);
+  } catch {
+    // If backend DB trigger handles profile insertion or RLS restricts client upsert
+    try {
+      const existing = await fetchUserProfile(data.user.id);
+      if (existing) profile = existing;
+    } catch {
+      // Continue gracefully with metadata fallback
+    }
   }
 
   const requiresEmailConfirmation = !data.session;
@@ -102,7 +115,7 @@ export async function signUpCustomer({
 export async function signInCustomer(email: string, password: string): Promise<AuthResult> {
   if (!isSupabaseConfigured) {
     throw new Error(
-      'Supabase is not configured. Please define VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.'
+      'Unable to connect to the authentication service. Supabase environment variables are missing.'
     );
   }
 
@@ -114,16 +127,19 @@ export async function signInCustomer(email: string, password: string): Promise<A
 
   if (error) {
     if (error.message.includes('Invalid login credentials')) {
-      throw new Error('Invalid email or password. Please verify your credentials.');
+      throw new Error('Invalid email or password.');
     }
-    throw new Error(error.message);
+    if (error.message.toLowerCase().includes('email not confirmed')) {
+      throw new Error('Please check your email to confirm your account.');
+    }
+    throw new Error(error.message || 'Unable to connect to the authentication service.');
   }
 
   if (!data.user) {
     throw new Error('Login failed: user not found.');
   }
 
-  // Fetch profile
+  // Fetch profile and role from Supabase
   const profile = await fetchUserProfile(data.user.id);
   const role = await fetchUserRole(data.user.id);
 
@@ -141,7 +157,7 @@ export async function signInCustomer(email: string, password: string): Promise<A
 export async function signInAdmin(email: string, password: string): Promise<AuthResult> {
   if (!isSupabaseConfigured) {
     throw new Error(
-      'Supabase is not configured. Please define VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.'
+      'Unable to connect to the authentication service. Supabase environment variables are missing.'
     );
   }
 
@@ -153,22 +169,22 @@ export async function signInAdmin(email: string, password: string): Promise<Auth
 
   if (error) {
     if (error.message.includes('Invalid login credentials')) {
-      throw new Error('Invalid admin email or password.');
+      throw new Error('Invalid email or password.');
     }
-    throw new Error(error.message);
+    throw new Error(error.message || 'Unable to connect to the authentication service.');
   }
 
   if (!data.user) {
     throw new Error('Authentication failed: user not found.');
   }
 
-  // Authorize: check if user has 'admin' role in user_roles table
+  // Authorize: check if user has 'admin' role in user_roles table or via has_role RPC
   const isAdmin = await checkIsAdmin(data.user.id);
 
   if (!isAdmin) {
     // Immediately terminate session since this user does not have admin permissions
     await supabase.auth.signOut();
-    throw new Error('Access Denied: Your account does not have administrator authorization.');
+    throw new Error('Your account does not have administrator access.');
   }
 
   const profile = await fetchUserProfile(data.user.id);
@@ -182,13 +198,24 @@ export async function signInAdmin(email: string, password: string): Promise<Auth
 }
 
 /**
- * Check if a given user has the 'admin' role in the database
+ * Check if a given user has the 'admin' role in the database.
+ * Verifies against has_role(_user_id, _role) RPC with user_roles table query fallback.
  */
 export async function checkIsAdmin(userId: string): Promise<boolean> {
-  if (!isSupabaseConfigured) return false;
+  if (!isSupabaseConfigured || !userId) return false;
 
   try {
-    // 1. Query user_roles table
+    // 1. Primary check: Call database function has_role(_user_id, _role)
+    const { data: rpcResult, error: rpcError } = await supabase.rpc('has_role', {
+      _user_id: userId,
+      _role: 'admin',
+    });
+
+    if (!rpcError && typeof rpcResult === 'boolean') {
+      return rpcResult;
+    }
+
+    // 2. Direct user_roles table query fallback / verification
     const { data, error } = await supabase
       .from('user_roles')
       .select('role')
@@ -200,14 +227,6 @@ export async function checkIsAdmin(userId: string): Promise<boolean> {
       return true;
     }
 
-    // 2. Query has_role RPC if present in database
-    try {
-      const { data: rpcResult } = await supabase.rpc('has_role', { role: 'admin' });
-      if (rpcResult === true) return true;
-    } catch {
-      // RPC might not exist, proceed
-    }
-
     return false;
   } catch (err) {
     console.error('Error verifying admin authorization:', err);
@@ -216,10 +235,10 @@ export async function checkIsAdmin(userId: string): Promise<boolean> {
 }
 
 /**
- * Fetch profile data for a user
+ * Fetch profile data for a user from Supabase profiles table
  */
 export async function fetchUserProfile(userId: string): Promise<UserProfile | null> {
-  if (!isSupabaseConfigured) return null;
+  if (!isSupabaseConfigured || !userId) return null;
 
   try {
     const { data, error } = await supabase
@@ -247,6 +266,36 @@ export async function fetchUserRole(userId: string): Promise<AppRole> {
 }
 
 /**
+ * Fetch all registered customer profiles from Supabase profiles table for Admin display
+ */
+export async function fetchAllCustomerProfiles(): Promise<UserSession[]> {
+  if (!isSupabaseConfigured) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error || !data) {
+      return [];
+    }
+
+    return data.map((p: UserProfile) => ({
+      id: p.id,
+      email: p.email || '',
+      phone: p.phone || '',
+      fullName: p.full_name || '',
+      role: 'customer' as AppRole,
+      time: p.created_at ? new Date(p.created_at).toLocaleDateString() : undefined,
+    }));
+  } catch (err) {
+    console.error('Error fetching customer profiles:', err);
+    return [];
+  }
+}
+
+/**
  * Sign out current user from Supabase
  */
 export async function signOutUser(): Promise<void> {
@@ -258,12 +307,16 @@ export async function signOutUser(): Promise<void> {
 /**
  * Helper to build UserSession object from Supabase user and profile
  */
-export function buildUserSession(user: any, profile: UserProfile | null, role: AppRole = 'customer'): UserSession {
+export function buildUserSession(
+  user: User,
+  profile: UserProfile | null,
+  role: AppRole = 'customer'
+): UserSession {
   return {
     id: user.id,
     email: user.email || profile?.email || '',
-    phone: profile?.phone || user.user_metadata?.phone || '',
-    fullName: profile?.full_name || user.user_metadata?.full_name || '',
+    phone: profile?.phone || (user.user_metadata?.phone as string | undefined) || '',
+    fullName: profile?.full_name || (user.user_metadata?.full_name as string | undefined) || '',
     role,
     time: new Date().toLocaleTimeString(),
   };

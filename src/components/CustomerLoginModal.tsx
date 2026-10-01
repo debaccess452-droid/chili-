@@ -71,8 +71,8 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
     try {
       const res = await signInCustomer(cleanEmail, password);
       const userSession: UserSession = {
-        id: res.user.id,
-        email: res.user.email || cleanEmail,
+        id: res.user?.id,
+        email: res.user?.email || cleanEmail,
         phone: res.profile?.phone || '',
         fullName: res.profile?.full_name || '',
         role: res.role,
@@ -140,10 +140,10 @@ export const CustomerLoginModal: React.FC<CustomerLoginModalProps> = ({
       }
 
       const userSession: UserSession = {
-        id: res.user.id,
-        email: res.user.email || cleanEmail,
-        phone: cleanPhone,
-        fullName: cleanName,
+        id: res.user?.id,
+        email: res.user?.email || cleanEmail,
+        phone: res.profile?.phone || cleanPhone,
+        fullName: res.profile?.full_name || cleanName,
         role: 'customer',
         time: new Date().toLocaleTimeString(),
       };
