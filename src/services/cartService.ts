@@ -139,7 +139,7 @@ export async function fetchCart(userId: string): Promise<CartItem[]> {
         weight: item.variant?.weight || '100g',
         price: activePrice,
         originalPrice,
-        image: resolveProductImage(item.product?.image_path, item.product?.name),
+        image: resolveProductImage(item.product?.image_path),
         qty: Math.max(1, item.quantity || 1),
       };
     });

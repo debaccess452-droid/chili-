@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { CustomerQuery, Order, Product, ProductVariant, Review, UserSession } from '../types';
-import { SPICE_CATEGORIES } from '../data/initialData';
+import { SVG_PLACEHOLDER_IMAGE } from '../services/catalogService';
 import { 
   Package, 
   ShoppingBag, 
@@ -25,6 +25,7 @@ import {
 
 interface AdminPanelProps {
   products: Product[];
+  categories?: string[];
   orders: Order[];
   users: UserSession[];
   queries: CustomerQuery[];
@@ -45,6 +46,7 @@ type AdminTab = 'products' | 'upload' | 'orders' | 'users' | 'queries' | 'review
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   products,
+  categories = [],
   orders,
   users,
   queries,
@@ -64,9 +66,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [orderFilter, setOrderFilter] = useState<'All' | Order['status']>('All');
 
+  const defaultCategory = (categories.length > 0 ? categories.find(c => c !== 'All Spices') : undefined) || 'Pure Spices';
+
   // Product Upload Form State
   const [pName, setPName] = useState('');
-  const [pCategory, setPCategory] = useState(SPICE_CATEGORIES[1]);
+  const [pCategory, setPCategory] = useState(defaultCategory);
   const [pSku, setPSku] = useState('');
   const [pStockQuantity, setPStockQuantity] = useState(100);
   const [pInStock, setPInStock] = useState(true);
@@ -138,7 +142,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       alert('Product name is required!');
       return;
     }
-    const finalImage = pImagePreview.trim() || pImageUrlInput.trim() || 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?auto=format&fit=crop&w=600&q=80';
+    const finalImage = pImagePreview.trim() || pImageUrlInput.trim() || SVG_PLACEHOLDER_IMAGE;
 
     const newProduct: Product = {
       id: Date.now(),
@@ -442,11 +446,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     onChange={(e) => setPCategory(e.target.value)}
                     className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none cursor-pointer"
                   >
-                    {SPICE_CATEGORIES.filter((c) => c !== 'All Spices').map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
+                    {(categories.length > 0 ? categories : ['Pure Spices', 'Blended Masalas', 'Whole Spices'])
+                      .filter((c) => c !== 'All Spices')
+                      .map((cat) => (
+                        <option key={cat} value={cat}>
+                          {cat}
+                        </option>
+                      ))}
                   </select>
                 </div>
 

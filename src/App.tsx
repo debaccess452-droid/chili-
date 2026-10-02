@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { CartItem, CustomerQuery, Order, PageId, Product, Review, UserSession } from './types';
 import { 
-  saveStoredProducts, 
   getStoredCart, 
   saveStoredCart, 
   getStoredWishlist, 
@@ -65,11 +64,37 @@ import {
   RefreshCw
 } from 'lucide-react';
 
+const HERO_BANNER_BG = `data:image/svg+xml;utf8,${encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 600" width="1600" height="600">
+  <defs>
+    <radialGradient id="spicesGlow" cx="65%" cy="45%" r="65%">
+      <stop offset="0%" stop-color="#92400e" stop-opacity="0.9"/>
+      <stop offset="45%" stop-color="#451a03" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#1c0a00" stop-opacity="1"/>
+    </radialGradient>
+    <linearGradient id="warmLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.75"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="600" fill="url(#spicesGlow)"/>
+  <rect width="1600" height="600" fill="url(#warmLight)"/>
+  <g opacity="0.2" transform="translate(1050, 100)">
+    <circle cx="200" cy="180" r="160" fill="#92400e" stroke="#fbbf24" stroke-width="4"/>
+    <circle cx="200" cy="180" r="140" fill="#d97706"/>
+    <circle cx="420" cy="220" r="120" fill="#78350f" stroke="#fbbf24" stroke-width="3"/>
+    <circle cx="420" cy="220" r="105" fill="#b91c1c"/>
+    <circle cx="300" cy="380" r="110" fill="#451a03" stroke="#f59e0b" stroke-width="3"/>
+    <circle cx="300" cy="380" r="95" fill="#f59e0b"/>
+  </g>
+</svg>
+`)}`;
+
 export default function App() {
   // State management
   const [currentPage, setCurrentPage] = useState<PageId>('home');
   const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<string[]>(['All Spices', 'Masala', 'Spices']);
+  const [categories, setCategories] = useState<string[]>(['All Spices']);
   const [isCatalogLoading, setIsCatalogLoading] = useState<boolean>(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -382,25 +407,22 @@ export default function App() {
     window.location.hash = page === 'home' ? '' : page;
   };
 
-  // Product Add / Update / Delete handlers (Saves to state and localStorage)
+  // Product Add / Update / Delete handlers (React state updates)
   const handleAddProduct = (newProduct: Product) => {
     const updated = [newProduct, ...products];
     setProducts(updated);
-    saveStoredProducts(updated);
     showToast(`"${newProduct.name}" uploaded successfully and is now live!`);
   };
 
   const handleUpdateProduct = (updatedProduct: Product) => {
     const updated = products.map((p) => (p.id === updatedProduct.id ? updatedProduct : p));
     setProducts(updated);
-    saveStoredProducts(updated);
     showToast(`Updated "${updatedProduct.name}" details.`);
   };
 
   const handleDeleteProduct = (productId: number | string) => {
     const updated = products.filter((p) => p.id !== productId);
     setProducts(updated);
-    saveStoredProducts(updated);
     showToast('Product removed from store.');
   };
 
@@ -412,7 +434,6 @@ export default function App() {
       return p;
     });
     setProducts(updated);
-    saveStoredProducts(updated);
   };
 
   // Cart operations
@@ -745,7 +766,7 @@ export default function App() {
             <section className="max-w-7xl mx-auto my-3 sm:my-5 px-3 sm:px-4 lg:px-6">
               <div className="relative h-[320px] sm:h-[380px] md:h-[430px] lg:h-[480px] w-full rounded-2xl sm:rounded-3xl overflow-hidden shadow-xl border border-amber-500/30 group">
                 <img
-                  src="https://images.unsplash.com/photo-1596040033229-a9821ebd058d?auto=format&fit=crop&w=1600&q=80"
+                  src={HERO_BANNER_BG}
                   alt="Traditional Indian Spices Banner"
                   className="w-full h-full object-cover group-hover:scale-103 transition-transform duration-700"
                 />
@@ -1085,6 +1106,7 @@ export default function App() {
         {currentPage === 'admin' && (
           <AdminPanel
             products={products}
+            categories={categories}
             orders={orders}
             users={users}
             queries={queries}

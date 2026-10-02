@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Product } from '../types';
 import { ShoppingCart, Heart, Check, AlertCircle } from 'lucide-react';
+import { SVG_PLACEHOLDER_IMAGE } from '../services/catalogService';
 
 interface ProductCardProps {
   product: Product;
@@ -15,18 +16,20 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   onToggleWishlist,
   isWishlisted,
 }) => {
-  // Default to 100g or first variant
-  const variants = product.variants && product.variants.length > 0 ? product.variants : [{ weight: '100g', price: 50 }];
+  const variants = product.variants && product.variants.length > 0 ? product.variants : [];
   const defaultVariantIndex = variants.findIndex((v) => v.weight === '100g');
   const initialIndex = defaultVariantIndex !== -1 ? defaultVariantIndex : 0;
   const [selectedVariantIndex, setSelectedVariantIndex] = useState(initialIndex);
   const [addedAnimation, setAddedAnimation] = useState(false);
 
   const currentVariant = variants[selectedVariantIndex] || variants[0];
+  const activePrice = currentVariant ? currentVariant.price : (product.salePrice ?? 0);
+  const originalPrice = currentVariant?.originalPrice;
+  const activeWeight = currentVariant?.weight || '';
 
   const handleAddToCart = () => {
     if (!product.inStock) return;
-    onAddToCart(product, currentVariant.weight, currentVariant.price);
+    onAddToCart(product, activeWeight, activePrice);
     setAddedAnimation(true);
     setTimeout(() => setAddedAnimation(false), 1200);
   };
@@ -37,14 +40,12 @@ export const ProductCard: React.FC<ProductCardProps> = ({
       {/* Product Image & Badges */}
       <div className="relative aspect-4/3 w-full overflow-hidden bg-amber-50/50">
         <img
-          src={product.image}
+          src={product.image || SVG_PLACEHOLDER_IMAGE}
           alt={product.name}
           loading="lazy"
           className="w-full h-full object-cover group-hover:scale-104 transition-transform duration-500"
           onError={(e) => {
-            // Fallback image if custom URL fails
-            (e.target as HTMLImageElement).src =
-              'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?auto=format&fit=crop&w=600&q=80';
+            (e.target as HTMLImageElement).src = SVG_PLACEHOLDER_IMAGE;
           }}
         />
 
@@ -94,43 +95,47 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           )}
 
           {/* Weight Variant Selector */}
-          <div className="mt-2">
-            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-              Select Net Weight:
-            </label>
-            <div className="relative">
-              <select
-                value={selectedVariantIndex}
-                onChange={(e) => setSelectedVariantIndex(Number(e.target.value))}
-                className="w-full bg-amber-50/60 border border-amber-300 text-xs font-semibold py-2 px-3 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none transition appearance-none cursor-pointer"
-              >
-                {product.variants.map((v, idx) => (
-                  <option key={`${v.weight}-${idx}`} value={idx}>
-                    {v.weight} — ₹{v.price}
-                  </option>
-                ))}
-              </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-amber-800">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                </svg>
+          {variants.length > 0 && (
+            <div className="mt-2">
+              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                Select Net Weight:
+              </label>
+              <div className="relative">
+                <select
+                  value={selectedVariantIndex}
+                  onChange={(e) => setSelectedVariantIndex(Number(e.target.value))}
+                  className="w-full bg-amber-50/60 border border-amber-300 text-xs font-semibold py-2 px-3 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none transition appearance-none cursor-pointer"
+                >
+                  {variants.map((v, idx) => (
+                    <option key={`${v.weight}-${idx}`} value={idx}>
+                      {v.weight} — ₹{v.price}
+                    </option>
+                  ))}
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-amber-800">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Dynamic Price Display */}
           <div className="mt-2.5 flex items-baseline gap-2 flex-wrap">
             <span className="text-lg sm:text-xl font-extrabold text-red-900 tracking-tight">
-              ₹{currentVariant.price}
+              ₹{activePrice}
             </span>
-            {currentVariant.originalPrice && currentVariant.originalPrice > currentVariant.price && (
+            {originalPrice && originalPrice > activePrice && (
               <span className="text-xs text-gray-400 line-through">
-                ₹{currentVariant.originalPrice}
+                ₹{originalPrice}
               </span>
             )}
-            <span className="text-[11px] text-gray-500 font-medium">
-              for {currentVariant.weight}
-            </span>
+            {activeWeight && (
+              <span className="text-[11px] text-gray-500 font-medium">
+                for {activeWeight}
+              </span>
+            )}
             {product.sku && (
               <span className="ml-auto text-[9px] sm:text-[10px] text-gray-400 font-mono">
                 {product.sku}
