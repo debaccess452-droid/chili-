@@ -16,16 +16,16 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   onToggleWishlist,
   isWishlisted,
 }) => {
-  const variants = product.variants && product.variants.length > 0 ? product.variants : [];
-  const defaultVariantIndex = variants.findIndex((v) => v.weight === '100g');
+  const variants = Array.isArray(product.variants) ? product.variants : [];
+  const defaultVariantIndex = variants.findIndex((v) => v?.weight === '100g');
   const initialIndex = defaultVariantIndex !== -1 ? defaultVariantIndex : 0;
   const [selectedVariantIndex, setSelectedVariantIndex] = useState(initialIndex);
   const [addedAnimation, setAddedAnimation] = useState(false);
 
   const currentVariant = variants[selectedVariantIndex] || variants[0];
-  const activePrice = currentVariant ? currentVariant.price : (product.salePrice ?? 0);
+  const activePrice = currentVariant ? Number(currentVariant.price) || 0 : Number(product.salePrice) || 0;
   const originalPrice = currentVariant?.originalPrice;
-  const activeWeight = currentVariant?.weight || '';
+  const activeWeight = currentVariant?.weight ? String(currentVariant.weight) : '';
 
   const handleAddToCart = () => {
     if (!product.inStock) return;

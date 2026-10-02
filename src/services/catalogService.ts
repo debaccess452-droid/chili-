@@ -14,7 +14,7 @@ export interface SupabaseCategory {
 export interface SupabaseVariant {
   id: string;
   product_id: string;
-  weight: string;
+  weight: string | number;
   price: number;
   sale_price?: number | null;
   created_at?: string;
@@ -33,7 +33,8 @@ export interface SupabaseProduct {
   is_featured?: boolean | null;
   created_at?: string;
   updated_at?: string;
-  category?: SupabaseCategory | null;
+  category?: SupabaseCategory | SupabaseCategory[] | null;
+  categories?: SupabaseCategory | SupabaseCategory[] | null;
   variants?: SupabaseVariant[] | null;
 }
 
@@ -59,17 +60,26 @@ export const SVG_PLACEHOLDER_IMAGE = `data:image/svg+xml;utf8,${encodeURICompone
 `)}`;
 
 /**
- * Resolves product image:
- * - If image_path exists: returns the real Supabase Storage image URL (or fully qualified URL).
- * - If image_path is null / empty: returns the clean SVG placeholder.
- * - Never invents or maps fake images.
+ * Resolves product image safely:
+ * - If imagePath exists: returns the real Supabase Storage image URL (or fully qualified URL).
+ * - If imagePath is null / empty / non-string: returns the clean SVG placeholder.
+ * - Handles string paths, storage object returns, or data URIs without throwing.
  */
-export function resolveProductImage(imagePath?: string | null): string {
-  if (!imagePath || !imagePath.trim()) {
+export function resolveProductImage(imagePath?: any): string {
+  if (!imagePath) {
     return SVG_PLACEHOLDER_IMAGE;
   }
 
-  const clean = imagePath.trim();
+  let clean = '';
+  if (typeof imagePath === 'string') {
+    clean = imagePath.trim();
+  } else if (typeof imagePath === 'object') {
+    clean = (imagePath.publicUrl || imagePath.url || imagePath.path || '').trim();
+  }
+
+  if (!clean) {
+    return SVG_PLACEHOLDER_IMAGE;
+  }
 
   // If already a complete URL or data URI, return as-is
   if (clean.startsWith('http://') || clean.startsWith('https://') || clean.startsWith('data:image/')) {
@@ -92,32 +102,54 @@ export function resolveProductImage(imagePath?: string | null): string {
   return `${cleanBase}/storage/v1/object/public/${bucketName}/${clean.replace(/^\/+/, '')}`;
 }
 
-function parseWeightInGrams(weightStr: string): number {
+/**
+ * Safely parse weight into grams without throwing if weight is numeric or undefined
+ */
+export function parseWeightInGrams(weightVal: any): number {
+  if (weightVal === null || weightVal === undefined) return 0;
+  if (typeof weightVal === 'number') return weightVal;
+  
+  const weightStr = String(weightVal).toLowerCase().trim();
   if (!weightStr) return 0;
-  const lower = weightStr.toLowerCase().trim();
-  if (lower.endsWith('kg')) {
-    return (parseFloat(lower) || 0) * 1000;
+
+  if (weightStr.endsWith('kg')) {
+    return (parseFloat(weightStr) || 0) * 1000;
   }
-  return parseFloat(lower) || 0;
+  return parseFloat(weightStr) || 0;
 }
 
 /**
- * Maps Supabase raw database product and variants to frontend Product type
+ * Maps Supabase raw database product and variants to frontend Product type.
+ * Robust against nulls, array vs object PostgREST relationships, and numeric weights.
  */
 export function mapSupabaseProductToProduct(dbProduct: SupabaseProduct): Product {
-  const rawVariants = dbProduct.variants || [];
+  // PostgREST relation handling: variants can be an array, a single object, or null
+  const rawVariants: any[] = Array.isArray(dbProduct.variants)
+    ? dbProduct.variants
+    : dbProduct.variants && typeof dbProduct.variants === 'object'
+    ? [dbProduct.variants]
+    : [];
+
   const sortedVariants = [...rawVariants].sort(
-    (a, b) => parseWeightInGrams(a.weight) - parseWeightInGrams(b.weight)
+    (a, b) => parseWeightInGrams(a?.weight) - parseWeightInGrams(b?.weight)
   );
 
   const mappedVariants: ProductVariant[] = sortedVariants.map((v) => {
-    const normalPrice = Number(v.price) || 0;
+    const normalPrice = Number(v?.price) || 0;
     const salePrice =
-      v.sale_price !== null && v.sale_price !== undefined ? Number(v.sale_price) : undefined;
+      v?.sale_price !== null && v?.sale_price !== undefined ? Number(v.sale_price) : undefined;
     const hasSale = salePrice !== undefined && salePrice > 0 && salePrice < normalPrice;
+
+    // Normalize weight: if raw number e.g. 100, format as '100g'
+    let weightStr = '';
+    if (v?.weight !== null && v?.weight !== undefined) {
+      const rawW = String(v.weight).trim();
+      weightStr = /^\d+$/.test(rawW) ? `${rawW}g` : rawW;
+    }
+
     return {
-      id: v.id,
-      weight: v.weight,
+      id: v?.id,
+      weight: weightStr,
       price: hasSale ? salePrice : normalPrice,
       originalPrice: hasSale ? normalPrice : undefined,
       salePrice: hasSale ? salePrice : undefined,
@@ -131,10 +163,19 @@ export function mapSupabaseProductToProduct(dbProduct: SupabaseProduct): Product
         dbProduct.stock_quantity > 0)
   );
 
+  // PostgREST relation handling: category can be an object or an array or undefined
+  let resolvedCategoryName = 'Spices';
+  const catRelation = dbProduct.category || dbProduct.categories;
+  if (Array.isArray(catRelation) && catRelation.length > 0 && catRelation[0]?.name) {
+    resolvedCategoryName = catRelation[0].name;
+  } else if (catRelation && typeof catRelation === 'object' && !Array.isArray(catRelation) && (catRelation as any).name) {
+    resolvedCategoryName = (catRelation as any).name;
+  }
+
   return {
     id: dbProduct.id,
-    name: dbProduct.name,
-    category: dbProduct.category?.name || 'Spices',
+    name: dbProduct.name || 'Authentic Indian Spice',
+    category: resolvedCategoryName,
     inStock,
     image: resolveProductImage(dbProduct.image_path),
     variants: mappedVariants,
@@ -163,7 +204,10 @@ export async function fetchCategories(): Promise<string[]> {
       return ['All Spices'];
     }
 
-    const categoryNames = (data || []).map((c) => c.name);
+    const categoryNames = (data || [])
+      .map((c) => c?.name)
+      .filter((name): name is string => Boolean(name && typeof name === 'string'));
+
     return ['All Spices', ...categoryNames.filter((name) => name !== 'All Spices')];
   } catch (err) {
     console.error('Unexpected error fetching categories:', err);
@@ -190,11 +234,11 @@ export async function fetchProducts(): Promise<Product[]> {
       throw new Error('Unable to load spice collection from Supabase.');
     }
 
-    if (!data) {
+    if (!data || !Array.isArray(data)) {
       return [];
     }
 
-    return (data as SupabaseProduct[]).map(mapSupabaseProductToProduct);
+    return data.map((item) => mapSupabaseProductToProduct(item as SupabaseProduct));
   } catch (err: any) {
     console.error('Error loading products from Supabase:', err);
     throw new Error(err.message || 'Unable to load spice collection from Supabase.');

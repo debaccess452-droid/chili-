@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Environment variables for Supabase - single source of truth
-const rawUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const rawAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const rawUrl = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) || '';
+const rawAnonKey = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) || '';
 
 // Target project URL
 export const SUPABASE_URL = 

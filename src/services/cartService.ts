@@ -121,25 +121,34 @@ export async function fetchCart(userId: string): Promise<CartItem[]> {
 
     if (!data) return [];
 
-    return (data as unknown as SupabaseCartItemJoin[]).map((item) => {
-      const normalPrice = Number(item.variant?.price) || 0;
+    return (data as any[]).map((item) => {
+      const variantObj = Array.isArray(item.variant) ? item.variant[0] : item.variant;
+      const productObj = Array.isArray(item.product) ? item.product[0] : item.product;
+
+      const normalPrice = Number(variantObj?.price) || 0;
       const salePrice =
-        item.variant?.sale_price !== null && item.variant?.sale_price !== undefined
-          ? Number(item.variant.sale_price)
+        variantObj?.sale_price !== null && variantObj?.sale_price !== undefined
+          ? Number(variantObj.sale_price)
           : undefined;
       const hasSale = salePrice !== undefined && salePrice > 0 && salePrice < normalPrice;
       const activePrice = hasSale ? salePrice : normalPrice;
       const originalPrice = hasSale ? normalPrice : undefined;
 
+      let weightStr = '';
+      if (variantObj?.weight !== null && variantObj?.weight !== undefined) {
+        const rawW = String(variantObj.weight).trim();
+        weightStr = /^\d+$/.test(rawW) ? `${rawW}g` : rawW;
+      }
+
       return {
         cartItemId: item.id,
         id: item.product_id,
         variantId: item.variant_id,
-        name: item.product?.name || 'Spice Product',
-        weight: item.variant?.weight || '100g',
+        name: productObj?.name || 'Spice Product',
+        weight: weightStr,
         price: activePrice,
         originalPrice,
-        image: resolveProductImage(item.product?.image_path),
+        image: resolveProductImage(productObj?.image_path),
         qty: Math.max(1, item.quantity || 1),
       };
     });

@@ -66,11 +66,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [orderFilter, setOrderFilter] = useState<'All' | Order['status']>('All');
 
-  const defaultCategory = (categories.length > 0 ? categories.find(c => c !== 'All Spices') : undefined) || 'Pure Spices';
+  const validCategories = (categories || []).filter((c) => Boolean(c && c !== 'All Spices'));
+  const defaultCategory = validCategories.length > 0 ? validCategories[0] : '';
 
   // Product Upload Form State
   const [pName, setPName] = useState('');
   const [pCategory, setPCategory] = useState(defaultCategory);
+
+  React.useEffect(() => {
+    if (!pCategory && validCategories.length > 0) {
+      setPCategory(validCategories[0]);
+    }
+  }, [validCategories, pCategory]);
   const [pSku, setPSku] = useState('');
   const [pStockQuantity, setPStockQuantity] = useState(100);
   const [pInStock, setPInStock] = useState(true);
@@ -446,13 +453,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     onChange={(e) => setPCategory(e.target.value)}
                     className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none cursor-pointer"
                   >
-                    {(categories.length > 0 ? categories : ['Pure Spices', 'Blended Masalas', 'Whole Spices'])
-                      .filter((c) => c !== 'All Spices')
-                      .map((cat) => (
-                        <option key={cat} value={cat}>
-                          {cat}
-                        </option>
-                      ))}
+                    {validCategories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
                   </select>
                 </div>
 

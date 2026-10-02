@@ -246,12 +246,21 @@ export default function App() {
     setIsCatalogLoading(true);
     setCatalogError(null);
     try {
-      const [fetchedProducts, fetchedCategories] = await Promise.all([
+      const [fetchedProductsResult, fetchedCategoriesResult] = await Promise.allSettled([
         fetchProducts(),
         fetchCategories(),
       ]);
-      setProducts(fetchedProducts);
-      setCategories(fetchedCategories);
+
+      if (fetchedCategoriesResult.status === 'fulfilled') {
+        setCategories(fetchedCategoriesResult.value);
+      }
+
+      if (fetchedProductsResult.status === 'fulfilled') {
+        setProducts(fetchedProductsResult.value);
+      } else {
+        console.error('Failed to load products from Supabase:', fetchedProductsResult.reason);
+        setCatalogError('Unable to load our spice collection. Please try again.');
+      }
     } catch (err: any) {
       console.error('Failed to load catalog from Supabase:', err);
       setCatalogError('Unable to load our spice collection. Please try again.');
@@ -440,7 +449,7 @@ export default function App() {
   const handleAddToCart = async (product: Product, selectedWeight: string, price: number) => {
     if (currentUser?.id) {
       try {
-        const variant = product.variants.find((v) => v.weight === selectedWeight);
+        const variant = (product.variants || []).find((v) => v?.weight === selectedWeight);
         let variantId = variant?.id;
 
         if (!variantId && typeof product.id === 'string') {
@@ -473,7 +482,7 @@ export default function App() {
     // Guest Cart
     const cartItemId = `${product.id}-${selectedWeight}`;
     const existingIndex = cart.findIndex((item) => item.cartItemId === cartItemId);
-    const variant = product.variants.find((v) => v.weight === selectedWeight);
+    const variant = (product.variants || []).find((v) => v?.weight === selectedWeight);
 
     let updatedCart: CartItem[];
     if (existingIndex > -1) {
@@ -698,9 +707,9 @@ export default function App() {
       selectedCategory === 'All Spices' || p.category === selectedCategory;
     const matchesSearch =
       !searchQuery.trim() ||
-      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.category?.toLowerCase().includes(searchQuery.toLowerCase());
+      (p.name && p.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (p.description && p.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (p.category && p.category.toLowerCase().includes(searchQuery.toLowerCase()));
     return matchesCategory && matchesSearch;
   });
 
