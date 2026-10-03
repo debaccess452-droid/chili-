@@ -474,104 +474,63 @@ export default function App() {
     window.location.hash = page === 'home' ? '' : page;
   };
 
-  // Product Add / Update / Delete handlers (Real Supabase persistence)
+  // Product mutations are authoritative in Supabase; React state is refreshed only after success.
   const handleAddProduct = async (newProduct: Product, file?: File | null) => {
-    console.log('[App] handleAddProduct invoked for:', newProduct.name);
     try {
-      const created = await createProduct(
-        {
-          name: newProduct.name,
-          category: newProduct.category,
-          sku: newProduct.sku,
-          description: newProduct.description,
-          shortDescription: newProduct.shortDescription,
-          image: newProduct.image,
-          stockQuantity: newProduct.stockQuantity,
-          inStock: newProduct.inStock,
-          isFeatured: newProduct.isFeatured,
-          variants: newProduct.variants,
-        },
-        file
-      );
-      setProducts((prev) => [created, ...prev.filter((p) => p.id !== created.id)]);
+      await createProduct({
+        name:newProduct.name, category:newProduct.category, sku:newProduct.sku, description:newProduct.description,
+        shortDescription:newProduct.shortDescription, image:newProduct.image, stockQuantity:newProduct.stockQuantity,
+        inStock:newProduct.inStock, isFeatured:newProduct.isFeatured, variants:newProduct.variants,
+      },file);
       await loadCatalog();
       showToast(`"${newProduct.name}" uploaded successfully and is now live!`);
       return true;
-    } catch (err: any) {
-      console.error('[App] Failed to create product in Supabase:', err);
-      showToast(err.message || 'Failed to save product to database.');
+    } catch (err:any) {
+      showToast(err.message||'Failed to save product to database.');
       throw err;
     }
   };
 
   const handleUpdateProduct = async (updatedProduct: Product, file?: File | null) => {
-    console.log('[App] handleUpdateProduct invoked for:', updatedProduct.name, updatedProduct.id);
     try {
-      const updated = await updateProduct(
-        updatedProduct.id,
-        {
-          name: updatedProduct.name,
-          category: updatedProduct.category,
-          sku: updatedProduct.sku,
-          description: updatedProduct.description,
-          shortDescription: updatedProduct.shortDescription,
-          image: updatedProduct.image,
-          stockQuantity: updatedProduct.stockQuantity,
-          inStock: updatedProduct.inStock,
-          isFeatured: updatedProduct.isFeatured,
-          variants: updatedProduct.variants,
-        },
-        file
-      );
-      setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      await updateProduct(updatedProduct.id,{
+        name:updatedProduct.name, category:updatedProduct.category, sku:updatedProduct.sku, description:updatedProduct.description,
+        shortDescription:updatedProduct.shortDescription, image:updatedProduct.image, stockQuantity:updatedProduct.stockQuantity,
+        inStock:updatedProduct.inStock, isFeatured:updatedProduct.isFeatured, variants:updatedProduct.variants,
+      },file);
       await loadCatalog();
       showToast(`Updated "${updatedProduct.name}" details.`);
       return true;
-    } catch (err: any) {
-      console.error('[App] Failed to update product in Supabase:', err);
-      showToast(err.message || 'Failed to update product in database.');
+    } catch (err:any) {
+      showToast(err.message||'Failed to update product in database.');
       throw err;
     }
   };
 
-  const handleDeleteProduct = async (productId: number | string) => {
-    console.log('[App] handleDeleteProduct invoked for:', productId);
+  const handleDeleteProduct = async (productId:number|string) => {
     try {
-      const res = await deleteProduct(productId);
-      if (res.deleted) {
-        setProducts((prev) => prev.filter((p) => p.id !== productId));
-      } else {
-        setProducts((prev) =>
-          prev.map((p) => (p.id === productId ? { ...p, inStock: false, stockQuantity: 0 } : p))
-        );
-      }
+      const res=await deleteProduct(productId);
+      if(!res.deleted) throw new Error(res.message);
       await loadCatalog();
       showToast(res.message);
       return true;
-    } catch (err: any) {
-      console.error('[App] Failed to delete product from Supabase:', err);
-      showToast(err.message || 'Failed to remove product.');
+    } catch (err:any) {
+      showToast(err.message||'Failed to remove product.');
       throw err;
     }
   };
 
-  const handleToggleStock = async (productId: number | string) => {
-    console.log('[App] handleToggleStock invoked for:', productId);
-    const existing = products.find((p) => p.id === productId);
-    if (!existing) return false;
+  const handleToggleStock = async (productId:number|string) => {
+    const existing=products.find(p=>p.id===productId);
+    if(!existing) return false;
     try {
-      const nextStatus = await toggleProductStock(productId, existing.inStock);
-      setProducts((prev) =>
-        prev.map((p) => (p.id === productId ? { ...p, inStock: nextStatus } : p))
-      );
+      const nextStatus=!existing.inStock;
+      await toggleProductStock(productId,nextStatus);
       await loadCatalog();
-      showToast(
-        `"${existing.name}" marked as ${nextStatus ? 'In Stock (Available)' : 'Out of Stock'}.`
-      );
+      showToast(`"${existing.name}" marked as ${nextStatus?'In Stock (Available)':'Out of Stock'}.`);
       return true;
-    } catch (err: any) {
-      console.error('[App] Failed to toggle stock in Supabase:', err);
-      showToast(err.message || 'Failed to update stock status.');
+    } catch (err:any) {
+      showToast(err.message||'Failed to update stock status.');
       throw err;
     }
   };

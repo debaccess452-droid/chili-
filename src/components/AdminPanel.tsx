@@ -94,7 +94,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [imageError, setImageError] = useState('');
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);\n  const [isDeleting, setIsDeleting] = useState(false);\n  const [updatingStockId, setUpdatingStockId] = useState<number | string | null>(null);
 
   // Variant weights & prices
   const [variants, setVariants] = useState<ProductVariant[]>([
@@ -684,14 +684,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                     <div className="mt-4 pt-3 border-t border-gray-200 flex items-center justify-between gap-2 flex-wrap">
                       <button
-                        onClick={() => onToggleStock(p.id)}
-                        className={`text-xs font-bold px-3 py-1.5 rounded-xl transition ${
+                        disabled={updatingStockId === p.id}
+                        onClick={async () => {
+                          setUpdatingStockId(p.id);
+                          try { await onToggleStock(p.id); } finally { setUpdatingStockId(null); }
+                        }}
+                        className={`text-xs font-bold px-3 py-1.5 rounded-xl transition disabled:opacity-60 disabled:cursor-not-allowed ${
                           p.inStock
                             ? 'bg-amber-100 text-amber-900 hover:bg-amber-200'
                             : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
                         }`}
                       >
-                        {p.inStock ? 'Mark Out of Stock' : 'Mark In Stock'}
+                        {updatingStockId === p.id ? 'Updating...' : p.inStock ? 'Mark Out of Stock' : 'Mark In Stock'}
                       </button>
 
                       <div className="flex items-center gap-2">
@@ -716,10 +720,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               shouldDelete = true;
                             }
                             if (shouldDelete) {
-                              await onDeleteProduct(p.id);
+                              setIsDeleting(true);
+                              try { await onDeleteProduct(p.id); } finally { setIsDeleting(false); }
                             }
                           }}
-                          className="text-xs text-red-600 hover:text-red-800 p-1.5 rounded-lg hover:bg-red-50 transition cursor-pointer"
+                          disabled={isDeleting}
+                          className="text-xs text-red-600 hover:text-red-800 p-1.5 rounded-lg hover:bg-red-50 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Delete Product"
                         >
                           <Trash2 className="w-4 h-4" />

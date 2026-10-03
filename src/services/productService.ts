@@ -29,100 +29,56 @@ export interface UpdateProductInput {
 }
 
 /**
- * Standard RFC4122 v4 UUID generator supporting all browser, node, and test environments
- */
-export function generateUUID(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-/**
  * Resolves a category name or ID to a valid category_id UUID from the Supabase categories table.
  * Falls back to an existing category ID if the requested category is not found,
  * preventing foreign-key constraint violations on products.category_id.
  */
-export async function resolveCategoryId(categoryNameOrId?: string): Promise<string | null> {
-  const trimmed = (categoryNameOrId || '').trim();
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (uuidRegex.test(trimmed)) {
-    return trimmed;
-  }
+export async function resolveCategoryId(categoryNameOrId?: string): Promise<string> {
+  assertConfigured();
+  const name = (categoryNameOrId || '').trim();
+  if (!name || name.toLowerCase() === 'all spices') throw new Error('A valid product category is required.');
 
-  try {
-    if (trimmed && trimmed.toLowerCase() !== 'all spices') {
-      const { data, error } = await supabase
-        .from('categories')
-        .select('id, name')
-        .ilike('name', trimmed)
-        .maybeSingle();
+  const { data, error } = await supabase.from('categories').select('id, name, slug').eq('active', true);
+  if (error) throw new Error(`Failed to resolve product category: ${error.message}`);
 
-      if (!error && data?.id) {
-        return data.id;
-      }
-    }
-
-    // Fallback: If categoryName is empty or not matched,
-    // find the first available category to avoid violating foreign-key constraint
-    const { data: fallback, error: fallbackError } = await supabase
-      .from('categories')
-      .select('id')
-      .limit(1)
-      .maybeSingle();
-
-    if (!fallbackError && fallback?.id) {
-      return fallback.id;
-    }
-  } catch (err) {
-    console.warn('[ProductService] Warning resolving category_id:', err);
-  }
-
-  return null;
+  const normalized = name.toLocaleLowerCase();
+  const match = (data || []).find((category) =>
+    String(category.name || '').trim().toLocaleLowerCase() === normalized ||
+    String(category.slug || '').trim().toLocaleLowerCase() === normalized
+  );
+  if (!match?.id) throw new Error(`Category "${name}" was not found in the categories table.`);
+  return match.id;
 }
 
 /**
  * Upload a product image file to Supabase Storage bucket 'product-images'
  * Generates a unique path: products/{productId}/{timestamp}-{safeFileName}
  */
-export async function uploadProductImage(
-  file: File,
-  productId?: string
-): Promise<string> {
-  if (!isSupabaseConfigured) {
-    throw new Error('Supabase is not configured.');
-  }
+export async function uploadProductImage(file: File, productId: string): Promise<string> {
+  if (!isSupabaseConfigured) throw new Error('Supabase is not configured.');
+  if (!file.type.startsWith('image/')) throw new Error('Please select a valid image file.');
+  if (file.size > 5 * 1024 * 1024) throw new Error('Image file size must be less than 5MB.');
 
-  const pId = productId || generateUUID();
-  const timestamp = Date.now();
-  const ext = file.name.split('.').pop()?.toLowerCase() || 'png';
-  const rawBase = file.name.substring(0, file.name.lastIndexOf('.')) || 'image';
-  const cleanBaseName = rawBase.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
-  const safeFileName = `${cleanBaseName}.${ext}`;
-  const filePath = `products/${pId}/${timestamp}-${safeFileName}`;
+  const ext = file.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+  const base = file.name.replace(/\.[^/.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'image';
+  const safeFileName = `${base}.${ext}`;
+  const filePath = `products/${productId}/${Date.now()}-${safeFileName}`;
 
-  console.log(`[ProductService] Uploading image to storage bucket "product-images" at "${filePath}"...`);
+  const { data, error } = await supabase.storage.from('product-images').upload(filePath, file, {
+    cacheControl: '3600',
+    contentType: file.type,
+    upsert: false,
+  });
+  if (error) throw new Error(`Failed to upload product image: ${error.message}`);
+  return data?.path || filePath;
+}
 
-  // Omit upsert: true to avoid requiring storage UPDATE permission in RLS
-  const { data, error } = await supabase.storage
-    .from('product-images')
-    .upload(filePath, file, {
-      cacheControl: '3600',
-      contentType: file.type || 'image/png',
-    });
-
-  if (error) {
-    console.error('[ProductService] Storage upload error:', error);
-    throw new Error(`Failed to upload product image: ${error.message}`);
-  }
-
-  const storagePath = data?.path || filePath;
-  console.log(`[ProductService] Successfully uploaded image to "${storagePath}".`);
-  return storagePath;
+export async function deleteProductImage(imagePath: string | null | undefined, productId: string): Promise<void> {
+  if (!isSupabaseConfigured) throw new Error('Supabase is not configured.');
+  const path = (imagePath || '').trim();
+  if (!path || !path.startsWith(`products/${productId}/`)) return;
+  const { error } = await supabase.storage.from('product-images').remove([path]);
+  if (error) throw new Error(`Failed to delete product image: ${error.message}`);
 }
 
 /**
@@ -229,211 +185,138 @@ export async function updateProductVariants(
 /**
  * Create a new product and its variants in Supabase
  */
-export async function createProduct(
-  input: CreateProductInput,
-  file?: File | null
-): Promise<Product> {
-  if (!isSupabaseConfigured) {
-    throw new Error('Supabase is not configured.');
-  }
-
-  if (!input.name || !input.name.trim()) {
-    throw new Error('Product name is required.');
-  }
-
-  console.log(`[ProductService] Creating product "${input.name.trim()}"...`);
-
-  const clientUUID = generateUUID();
-
-  let imagePath: string | null = null;
-  if (file) {
-    imagePath = await uploadProductImage(file, clientUUID);
-  } else if (input.image && !input.image.startsWith('data:image/')) {
-    imagePath = input.image.trim();
-  }
+export async function createProduct(input: CreateProductInput, file?: File | null): Promise<Product> {
+  if (!isSupabaseConfigured) throw new Error('Supabase is not configured.');
+  if (!input.name?.trim()) throw new Error('Product name is required.');
+  if (input.image?.trim().startsWith('data:image/')) throw new Error('Data URI images cannot be persisted. Upload the image file instead.');
 
   const categoryId = await resolveCategoryId(input.category);
-
   const payload: any = {
     name: input.name.trim(),
     category_id: categoryId,
-    sku: input.sku?.trim() || `KBR-${input.name.slice(0, 3).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`,
+    sku: input.sku?.trim() || null,
     description: input.description?.trim() || null,
     short_description: input.shortDescription?.trim() || null,
-    image_path: imagePath,
-    stock_quantity: Number(input.stockQuantity) ?? 50,
+    image_path: null,
+    stock_quantity: Number(input.stockQuantity ?? 0),
     in_stock: input.inStock !== false,
     is_featured: Boolean(input.isFeatured),
   };
 
-  payload.id = clientUUID;
+  const { data: created, error } = await supabase.from('products').insert(payload).select('*').single();
+  if (error || !created) throw new Error(`Failed to create product: ${error?.message || 'Database error'}`);
 
-  let { data, error } = await supabase
-    .from('products')
-    .insert(payload)
-    .select('*')
-    .single();
+  const productId = String(created.id);
+  let imagePath: string | null = null;
+  try {
+    if (file) {
+      imagePath = await uploadProductImage(file, productId);
+      const { error: imageError } = await supabase.from('products').update({ image_path: imagePath }).eq('id', productId);
+      if (imageError) throw new Error(`Failed to save product image path: ${imageError.message}`);
+    } else if (input.image?.trim()) {
+      imagePath = input.image.trim();
+      const { error: imageError } = await supabase.from('products').update({ image_path: imagePath }).eq('id', productId);
+      if (imageError) throw new Error(`Failed to save product image path: ${imageError.message}`);
+    }
 
-  if (error && (error.message.includes('identity') || error.message.includes('cannot insert into column "id"'))) {
-    console.warn('[ProductService] Retrying insert without explicit id...');
-    delete payload.id;
-    const retry = await supabase
-      .from('products')
-      .insert(payload)
-      .select('*')
-      .single();
-    data = retry.data;
-    error = retry.error;
+    if (input.variants?.length) await createProductVariants(productId, input.variants);
+  } catch (err) {
+    if (imagePath && imagePath.startsWith(`products/${productId}/`)) {
+      try { await deleteProductImage(imagePath, productId); } catch (cleanupError) { console.error(cleanupError); }
+    }
+    try { await supabase.from('products').delete().eq('id', productId); } catch (cleanupError) { console.error(cleanupError); }
+    throw err;
   }
 
-  if (error || !data) {
-    console.error('[ProductService] Failed to insert product in Supabase:', error);
-    throw new Error(`Failed to create product: ${error?.message || 'Database error'}`);
-  }
-
-  const createdId = data.id;
-  console.log(`[ProductService] Product record created with ID "${createdId}".`);
-
-  if (input.variants && input.variants.length > 0) {
-    await createProductVariants(createdId, input.variants);
-  }
-
-  let freshProduct = await fetchProductById(createdId);
-  if (!freshProduct) {
-    console.warn('[ProductService] fetchProductById returned null, assembling product object from database record...');
-    freshProduct = mapSupabaseProductToProduct({
-      ...data,
-      variants: input.variants.map((v, i) => ({
-        id: (v as any).id || `v-${i}-${Date.now()}`,
-        product_id: createdId,
-        weight: v.weight,
-        price: v.price,
-        sale_price: v.salePrice,
-      })),
-    });
-  }
-
-  console.log(`[ProductService] Successfully created product "${freshProduct.name}" (${freshProduct.id}).`);
-  return freshProduct;
+  const persisted = await fetchProductById(productId);
+  if (!persisted) throw new Error('Product was created but could not be reloaded from Supabase.');
+  return persisted;
 }
 
 /**
  * Update an existing product and its variants in Supabase
  */
-export async function updateProduct(
-  productId: string | number,
-  updates: UpdateProductInput,
-  file?: File | null
-): Promise<Product> {
-  if (!isSupabaseConfigured) {
-    throw new Error('Supabase is not configured.');
-  }
+export async function updateProduct(productId: string | number, updates: UpdateProductInput, file?: File | null): Promise<Product> {
+  if (!isSupabaseConfigured) throw new Error('Supabase is not configured.');
+  const id = String(productId).trim();
+  if (!id) throw new Error('Product ID is required.');
+  if (updates.image?.trim().startsWith('data:image/')) throw new Error('Data URI images cannot be persisted. Upload the image file instead.');
 
-  const pIdStr = String(productId);
-  console.log(`[ProductService] Updating product ${pIdStr}...`);
+  const categoryId = updates.category !== undefined ? await resolveCategoryId(updates.category) : undefined;
+  const payload: any = {};
+  if (updates.name !== undefined) payload.name = updates.name.trim();
+  if (categoryId !== undefined) payload.category_id = categoryId;
+  if (updates.sku !== undefined) payload.sku = updates.sku.trim() || null;
+  if (updates.description !== undefined) payload.description = updates.description.trim() || null;
+  if (updates.shortDescription !== undefined) payload.short_description = updates.shortDescription.trim() || null;
+  if (updates.stockQuantity !== undefined) payload.stock_quantity = Number(updates.stockQuantity);
+  if (updates.inStock !== undefined) payload.in_stock = updates.inStock;
+  if (updates.isFeatured !== undefined) payload.is_featured = updates.isFeatured;
 
-  const payload: any = {
-    updated_at: new Date().toISOString(),
-  };
+  const { data: current, error: currentError } = await supabase.from('products').select('id, image_path').eq('id', id).maybeSingle();
+  if (currentError) throw new Error(`Failed to load product before update: ${currentError.message}`);
+  if (!current) throw new Error(`Product ${id} was not found.`);
 
-  if (updates.name !== undefined) {
-    payload.name = updates.name.trim();
-  }
-  if (updates.sku !== undefined) {
-    payload.sku = updates.sku.trim();
-  }
-  if (updates.description !== undefined) {
-    payload.description = updates.description.trim() || null;
-  }
-  if (updates.shortDescription !== undefined) {
-    payload.short_description = updates.shortDescription.trim() || null;
-  }
-  if (updates.stockQuantity !== undefined) {
-    payload.stock_quantity = Number(updates.stockQuantity);
-  }
-  if (updates.inStock !== undefined) {
-    payload.in_stock = updates.inStock;
-  }
-  if (updates.isFeatured !== undefined) {
-    payload.is_featured = updates.isFeatured;
-  }
-
+  let newImagePath: string | null = null;
   if (file) {
-    payload.image_path = await uploadProductImage(file, pIdStr);
-  } else if (updates.image !== undefined && !updates.image.startsWith('data:image/')) {
+    newImagePath = await uploadProductImage(file, id);
+    payload.image_path = newImagePath;
+  } else if (updates.image !== undefined) {
     payload.image_path = updates.image.trim() || null;
   }
 
-  if (updates.category !== undefined) {
-    payload.category_id = await resolveCategoryId(updates.category);
+  try {
+    if (Object.keys(payload).length) {
+      const { error } = await supabase.from('products').update(payload).eq('id', id);
+      if (error) throw new Error(`Failed to update product: ${error.message}`);
+    }
+    if (updates.variants !== undefined) {
+      for (const variant of updates.variants) {
+        const values = {
+          weight: String(variant.weight || '').trim(),
+          price: Number(variant.price),
+          sale_price: variant.salePrice == null ? null : Number(variant.salePrice),
+        };
+        if (!values.weight || !Number.isFinite(values.price) || values.price < 0) {
+          throw new Error('Invalid product variant data.');
+        }
+        if (variant.id) {
+          const { data, error } = await supabase.from('product_variants')
+            .update(values).eq('id', variant.id).eq('product_id', id).select('*').maybeSingle();
+          if (error) throw new Error(`Failed to update variant ${variant.id}: ${error.message}`);
+          if (!data) throw new Error(`Variant ${variant.id} was not found for product ${id}.`);
+        } else {
+          const { error } = await supabase.from('product_variants').insert({ product_id: id, ...values });
+          if (error) throw new Error(`Failed to create product variant: ${error.message}`);
+        }
+      }
+    }
+  } catch (err) {
+    if (newImagePath) {
+      try { await deleteProductImage(newImagePath, id); } catch (cleanupError) { console.error(cleanupError); }
+    }
+    throw err;
   }
 
-  const { data, error } = await supabase
-    .from('products')
-    .update(payload)
-    .eq('id', pIdStr)
-    .select('*')
-    .maybeSingle();
-
-  if (error) {
-    console.error('[ProductService] Failed to update product in Supabase:', error);
-    throw new Error(`Failed to update product: ${error.message}`);
+  if (newImagePath && current.image_path && current.image_path !== newImagePath && String(current.image_path).startsWith(`products/${id}/`)) {
+    try { await deleteProductImage(current.image_path, id); } catch (cleanupError) { console.warn(cleanupError); }
   }
 
-  if (updates.variants && updates.variants.length > 0) {
-    await updateProductVariants(pIdStr, updates.variants);
-  }
-
-  let freshProduct = await fetchProductById(pIdStr);
-  if (!freshProduct) {
-    console.warn('[ProductService] fetchProductById returned null, assembling product object from updated record...');
-    freshProduct = mapSupabaseProductToProduct({
-      ...(data || payload),
-      id: pIdStr,
-      variants: updates.variants?.map((v, i) => ({
-        id: v.id || `v-${i}-${Date.now()}`,
-        product_id: pIdStr,
-        weight: v.weight,
-        price: v.price,
-        sale_price: v.salePrice,
-      })),
-    });
-  }
-
-  console.log(`[ProductService] Successfully updated product ${pIdStr}.`);
-  return freshProduct;
+  const persisted = await fetchProductById(id);
+  if (!persisted) throw new Error(`Product ${id} was updated but could not be reloaded from Supabase.`);
+  return persisted;
 }
 
 /**
  * Toggle the in_stock status of a product in Supabase
  */
-export async function toggleProductStock(
-  productId: string | number,
-  currentStockStatus: boolean
-): Promise<boolean> {
-  if (!isSupabaseConfigured) {
-    throw new Error('Supabase is not configured.');
-  }
-
-  const pIdStr = String(productId);
-  const nextStatus = !currentStockStatus;
-  console.log(`[ProductService] Toggling stock for ${pIdStr} from ${currentStockStatus} to ${nextStatus}...`);
-
-  const { error } = await supabase
-    .from('products')
-    .update({
-      in_stock: nextStatus,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', pIdStr);
-
-  if (error) {
-    console.error('[ProductService] Error toggling product stock:', error);
-    throw new Error(`Failed to update stock status: ${error.message}`);
-  }
-
-  console.log(`[ProductService] Successfully toggled stock for ${pIdStr} to ${nextStatus}.`);
-  return nextStatus;
+export async function toggleProductStock(productId: string | number, inStock: boolean): Promise<boolean> {
+  if (!isSupabaseConfigured) throw new Error('Supabase is not configured.');
+  const id = String(productId).trim();
+  const { data, error } = await supabase.from('products').update({ in_stock: Boolean(inStock) }).eq('id', id).select('in_stock').maybeSingle();
+  if (error) throw new Error(`Failed to update stock status: ${error.message}`);
+  if (!data) throw new Error(`Product ${id} was not found or the update was not authorized.`);
+  return Boolean(data.in_stock);
 }
 
 /**
@@ -442,84 +325,24 @@ export async function toggleProductStock(
  * it safely deactivates the product (marks in_stock = false, stock_quantity = 0)
  * rather than destroying historical order integrity.
  */
-export async function deleteProduct(
-  productId: string | number
-): Promise<{ deleted: boolean; message: string }> {
-  if (!isSupabaseConfigured) {
-    throw new Error('Supabase is not configured.');
-  }
+export async function deleteProduct(productId: string | number): Promise<{ deleted: boolean; storageImageDeleted: boolean; message: string }> {
+  if (!isSupabaseConfigured) throw new Error('Supabase is not configured.');
+  const id = String(productId).trim();
+  const { data: current, error: currentError } = await supabase.from('products').select('id, image_path').eq('id', id).maybeSingle();
+  if (currentError) throw new Error(`Failed to load product before deletion: ${currentError.message}`);
+  if (!current) throw new Error(`Product ${id} was not found.`);
 
-  const pIdStr = String(productId);
-  console.log(`[ProductService] Attempting to delete product ${pIdStr}...`);
+  const { error: deleteError } = await supabase.from('products').delete().eq('id', id);
+  if (deleteError) throw new Error(`Product could not be deleted: ${deleteError.message}`);
 
-  try {
-    // 1. Try to delete product_variants first
-    const { error: variantError } = await supabase
-      .from('product_variants')
-      .delete()
-      .eq('product_id', pIdStr);
-
-    if (variantError) {
-      console.warn(`[ProductService] Variants linked to foreign key records. Safely deactivating product...`);
-      await supabase
-        .from('products')
-        .update({
-          in_stock: false,
-          stock_quantity: 0,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', pIdStr);
-
-      return {
-        deleted: false,
-        message: 'Product is linked to customer orders. It has been safely marked out of stock to preserve order history.',
-      };
+  let storageImageDeleted = true;
+  let message = 'Product successfully removed from catalog.';
+  if (current.image_path && String(current.image_path).startsWith(`products/${id}/`)) {
+    try { await deleteProductImage(current.image_path, id); }
+    catch (error: any) {
+      storageImageDeleted = false;
+      message = `Product was deleted, but its storage image could not be removed: ${error.message}`;
     }
-
-    // 2. Try to delete product from products table
-    const { error: prodError } = await supabase
-      .from('products')
-      .delete()
-      .eq('id', pIdStr);
-
-    if (prodError) {
-      console.warn(`[ProductService] Product linked to cart/order records (${prodError.message}). Safely deactivating...`);
-      await supabase
-        .from('products')
-        .update({
-          in_stock: false,
-          stock_quantity: 0,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', pIdStr);
-
-      return {
-        deleted: false,
-        message: 'Product is linked to store records. It has been safely marked out of stock.',
-      };
-    }
-
-    console.log(`[ProductService] Product ${pIdStr} deleted successfully.`);
-    return {
-      deleted: true,
-      message: 'Product successfully removed from catalog.',
-    };
-  } catch (err: any) {
-    console.error('[ProductService] Error during product deletion:', err);
-    try {
-      await supabase
-        .from('products')
-        .update({
-          in_stock: false,
-          stock_quantity: 0,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', pIdStr);
-    } catch {}
-
-    return {
-      deleted: false,
-      message: 'Product was marked out of stock to preserve store integrity.',
-    };
   }
+  return { deleted: true, storageImageDeleted, message };
 }
