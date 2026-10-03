@@ -17,8 +17,15 @@ export interface AuthResult {
   requiresEmailConfirmation?: boolean;
 }
 
+export interface UpdateProfileParams {
+  fullName?: string;
+  phone?: string;
+}
+
 /**
- * Register a new customer via Supabase Auth and initialize user profile
+ * Register a new customer via Supabase Auth and initialize user metadata.
+ * The database trigger creates the profile and customer role.
+ * Does NOT write to profiles.email or perform client upsert with email.
  */
 export async function signUpCustomer({
   fullName,
@@ -32,11 +39,11 @@ export async function signUpCustomer({
     );
   }
 
-  // 1. Call Supabase Auth signUp
   const cleanEmail = email.trim().toLowerCase();
   const cleanPhone = phone.trim().replace(/\D/g, '');
   const cleanName = fullName.trim();
 
+  // Call Supabase Auth signUp with metadata in options.data
   const { data, error } = await supabase.auth.signUp({
     email: cleanEmail,
     password,
@@ -49,10 +56,15 @@ export async function signUpCustomer({
   });
 
   if (error) {
-    if (error.message.toLowerCase().includes('already registered')) {
+    const msg = error.message.toLowerCase();
+    if (
+      msg.includes('already registered') ||
+      msg.includes('already exists') ||
+      msg.includes('user already exists')
+    ) {
       throw new Error('An account with this email already exists. Please sign in instead.');
     }
-    if (error.message.toLowerCase().includes('password')) {
+    if (msg.includes('password')) {
       throw new Error('Password must be at least 6 characters long.');
     }
     throw new Error(error.message || 'Unable to connect to the authentication service.');
@@ -62,40 +74,19 @@ export async function signUpCustomer({
     throw new Error('Failed to create customer account. Please try again.');
   }
 
-  // 2. Synchronize profile into `profiles` table
-  let profile: UserProfile | null = {
-    id: data.user.id,
-    full_name: cleanName,
-    email: cleanEmail,
-    phone: cleanPhone,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
+  // After signup, fetch the profile using its id created by the database trigger
+  let profile: UserProfile | null = await fetchUserProfile(data.user.id);
 
-  try {
-    const { data: upsertedProfile } = await supabase
-      .from('profiles')
-      .upsert({
-        id: data.user.id,
-        full_name: cleanName,
-        email: cleanEmail,
-        phone: cleanPhone,
-        updated_at: new Date().toISOString(),
-      })
-      .select('*')
-      .maybeSingle();
-
-    if (upsertedProfile) {
-      profile = upsertedProfile;
-    }
-  } catch {
-    // If backend DB trigger handles profile insertion or RLS restricts client upsert
-    try {
-      const existing = await fetchUserProfile(data.user.id);
-      if (existing) profile = existing;
-    } catch {
-      // Continue gracefully with metadata fallback
-    }
+  if (!profile) {
+    // Graceful fallback for initial UI state before confirmation/trigger propagation
+    profile = {
+      id: data.user.id,
+      full_name: cleanName,
+      phone: cleanPhone,
+      role: 'customer',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
   }
 
   const requiresEmailConfirmation = !data.session;
@@ -126,11 +117,15 @@ export async function signInCustomer(email: string, password: string): Promise<A
   });
 
   if (error) {
-    if (error.message.includes('Invalid login credentials')) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes('invalid login credentials') || msg.includes('invalid credentials')) {
       throw new Error('Invalid email or password.');
     }
-    if (error.message.toLowerCase().includes('email not confirmed')) {
+    if (msg.includes('email not confirmed')) {
       throw new Error('Please check your email to confirm your account.');
+    }
+    if (msg.includes('password')) {
+      throw new Error('Invalid password provided.');
     }
     throw new Error(error.message || 'Unable to connect to the authentication service.');
   }
@@ -152,7 +147,9 @@ export async function signInCustomer(email: string, password: string): Promise<A
 }
 
 /**
- * Authenticate admin with email and password, verifying `admin` role in database
+ * Authenticate admin with email and password, verifying `admin` role in user_roles table.
+ * Admin login succeeds ONLY when the authenticated user has role='admin' in user_roles.
+ * If no admin role exists: immediately sign out and throw an administrator-access error.
  */
 export async function signInAdmin(email: string, password: string): Promise<AuthResult> {
   if (!isSupabaseConfigured) {
@@ -168,8 +165,12 @@ export async function signInAdmin(email: string, password: string): Promise<Auth
   });
 
   if (error) {
-    if (error.message.includes('Invalid login credentials')) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes('invalid login credentials') || msg.includes('invalid credentials')) {
       throw new Error('Invalid email or password.');
+    }
+    if (msg.includes('email not confirmed')) {
+      throw new Error('Please check your email to confirm your account.');
     }
     throw new Error(error.message || 'Unable to connect to the authentication service.');
   }
@@ -178,13 +179,18 @@ export async function signInAdmin(email: string, password: string): Promise<Auth
     throw new Error('Authentication failed: user not found.');
   }
 
-  // Authorize: check if user has 'admin' role in user_roles table or via has_role RPC
-  const isAdmin = await checkIsAdmin(data.user.id);
+  // Query user_roles directly for verified admin role
+  const { data: roleRecord, error: roleError } = await supabase
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', data.user.id)
+    .eq('role', 'admin')
+    .maybeSingle();
 
-  if (!isAdmin) {
-    // Immediately terminate session since this user does not have admin permissions
+  if (roleError || !roleRecord || roleRecord.role !== 'admin') {
+    // Non-admin attempting admin login must be signed out immediately
     await supabase.auth.signOut();
-    throw new Error('Your account does not have administrator access.');
+    throw new Error('Access Denied: Your account does not have administrator authorization.');
   }
 
   const profile = await fetchUserProfile(data.user.id);
@@ -199,23 +205,13 @@ export async function signInAdmin(email: string, password: string): Promise<Auth
 
 /**
  * Check if a given user has the 'admin' role in the database.
- * Verifies against has_role(_user_id, _role) RPC with user_roles table query fallback.
+ * Directly queries the `user_roles` table for role='admin'.
+ * No RPC or public has_role call is used.
  */
 export async function checkIsAdmin(userId: string): Promise<boolean> {
   if (!isSupabaseConfigured || !userId) return false;
 
   try {
-    // 1. Primary check: Call database function has_role(_user_id, _role)
-    const { data: rpcResult, error: rpcError } = await supabase.rpc('has_role', {
-      _user_id: userId,
-      _role: 'admin',
-    });
-
-    if (!rpcError && typeof rpcResult === 'boolean') {
-      return rpcResult;
-    }
-
-    // 2. Direct user_roles table query fallback / verification
     const { data, error } = await supabase
       .from('user_roles')
       .select('role')
@@ -235,7 +231,8 @@ export async function checkIsAdmin(userId: string): Promise<boolean> {
 }
 
 /**
- * Fetch profile data for a user from Supabase profiles table
+ * Fetch profile data for a user from Supabase profiles table.
+ * Note: profiles schema contains id, full_name, phone, role, created_at, updated_at (no email).
  */
 export async function fetchUserProfile(userId: string): Promise<UserProfile | null> {
   if (!isSupabaseConfigured || !userId) return null;
@@ -243,7 +240,7 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile | nu
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('*')
+      .select('id, full_name, phone, role, created_at, updated_at')
       .eq('id', userId)
       .maybeSingle();
 
@@ -258,7 +255,7 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile | nu
 }
 
 /**
- * Fetch role for a user ('admin' or default to 'customer')
+ * Fetch role for a user ('admin' from user_roles or default to 'customer')
  */
 export async function fetchUserRole(userId: string): Promise<AppRole> {
   const isAdmin = await checkIsAdmin(userId);
@@ -266,7 +263,45 @@ export async function fetchUserRole(userId: string): Promise<AppRole> {
 }
 
 /**
- * Fetch all registered customer profiles from Supabase profiles table for Admin display
+ * Update authenticated customer's own profile (full_name and phone only).
+ * Customers must never be able to change id or role.
+ */
+export async function updateCustomerProfile(
+  userId: string,
+  params: UpdateProfileParams
+): Promise<UserProfile | null> {
+  if (!isSupabaseConfigured || !userId) {
+    throw new Error('Authentication required to update profile.');
+  }
+
+  const updates: { full_name?: string; phone?: string; updated_at: string } = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (params.fullName !== undefined) {
+    updates.full_name = params.fullName.trim();
+  }
+  if (params.phone !== undefined) {
+    updates.phone = params.phone.trim().replace(/\D/g, '');
+  }
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .update(updates)
+    .eq('id', userId)
+    .select('id, full_name, phone, role, created_at, updated_at')
+    .maybeSingle();
+
+  if (error) {
+    throw new Error('Failed to update profile. Please try again.');
+  }
+
+  return data as UserProfile;
+}
+
+/**
+ * Fetch all registered customer profiles from Supabase profiles table for Admin display.
+ * Does not read or query profiles.email.
  */
 export async function fetchAllCustomerProfiles(): Promise<UserSession[]> {
   if (!isSupabaseConfigured) return [];
@@ -274,7 +309,7 @@ export async function fetchAllCustomerProfiles(): Promise<UserSession[]> {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('*')
+      .select('id, full_name, phone, role, created_at, updated_at')
       .order('created_at', { ascending: false });
 
     if (error || !data) {
@@ -283,7 +318,7 @@ export async function fetchAllCustomerProfiles(): Promise<UserSession[]> {
 
     return data.map((p: UserProfile) => ({
       id: p.id,
-      email: p.email || '',
+      email: '', // profiles table does not store email; auth.users is the source of truth
       phone: p.phone || '',
       fullName: p.full_name || '',
       role: 'customer' as AppRole,
@@ -305,7 +340,8 @@ export async function signOutUser(): Promise<void> {
 }
 
 /**
- * Helper to build UserSession object from Supabase user and profile
+ * Helper to build UserSession object from Supabase user and profile.
+ * Email is derived exclusively from user.email (auth.users source of truth).
  */
 export function buildUserSession(
   user: User,
@@ -314,7 +350,7 @@ export function buildUserSession(
 ): UserSession {
   return {
     id: user.id,
-    email: user.email || profile?.email || '',
+    email: user.email || '',
     phone: profile?.phone || (user.user_metadata?.phone as string | undefined) || '',
     fullName: profile?.full_name || (user.user_metadata?.full_name as string | undefined) || '',
     role,
@@ -323,7 +359,7 @@ export function buildUserSession(
 }
 
 /**
- * Send password reset email to customer
+ * Send password reset email to customer via Supabase resetPasswordForEmail
  */
 export async function sendPasswordResetEmail(email: string): Promise<void> {
   if (!isSupabaseConfigured) {
@@ -337,7 +373,6 @@ export async function sendPasswordResetEmail(email: string): Promise<void> {
     throw new Error('Please enter a valid email address.');
   }
 
-  // Use dynamic browser origin so it functions on localhost and deployed Vercel domain
   const redirectTo = `${window.location.origin}/`;
 
   const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
@@ -345,12 +380,16 @@ export async function sendPasswordResetEmail(email: string): Promise<void> {
   });
 
   if (error) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes('rate limit')) {
+      throw new Error('Too many requests. Please wait a few moments before trying again.');
+    }
     throw new Error(error.message || 'Failed to send password reset email. Please try again.');
   }
 }
 
 /**
- * Update user password after password recovery
+ * Update user password after recovery via Supabase updateUser({ password })
  */
 export async function updateUserPassword(newPassword: string): Promise<void> {
   if (!isSupabaseConfigured) {
@@ -368,10 +407,13 @@ export async function updateUserPassword(newPassword: string): Promise<void> {
   });
 
   if (error) {
-    if (error.message.toLowerCase().includes('same password')) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes('same password')) {
       throw new Error('New password must be different from previous password.');
+    }
+    if (msg.includes('expired') || msg.includes('invalid token') || msg.includes('otp')) {
+      throw new Error('Password reset link has expired. Please request a new one.');
     }
     throw new Error(error.message || 'Failed to update password. Please try again.');
   }
 }
-

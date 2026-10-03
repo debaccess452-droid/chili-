@@ -283,13 +283,22 @@ export default function App() {
 
     const isAuthRedirect = hasAuthRedirectInUrl();
 
-    // Check for error_description in URL hash (e.g. expired confirmation link)
-    if (window.location.hash.includes('error_description=')) {
+    // Check for error_description in URL hash (e.g. expired confirmation link or expired reset link)
+    if (window.location.hash.includes('error_description=') || window.location.hash.includes('error=')) {
       try {
-        const params = new URLSearchParams(window.location.hash.replace('#', '?'));
-        const errorDesc = params.get('error_description');
+        const hashParams = new URLSearchParams(
+          window.location.hash.includes('?') 
+            ? window.location.hash.substring(window.location.hash.indexOf('?'))
+            : window.location.hash.replace('#', '?')
+        );
+        const errorDesc = hashParams.get('error_description') || hashParams.get('error');
         if (errorDesc) {
-          showToast(decodeURIComponent(errorDesc.replace(/\+/g, ' ')));
+          const decoded = decodeURIComponent(errorDesc.replace(/\+/g, ' '));
+          if (decoded.toLowerCase().includes('expired')) {
+            showToast('Password reset link has expired. Please request a new one.');
+          } else {
+            showToast(decoded);
+          }
         }
       } catch {
         showToast('Authentication error. Please sign in again.');
@@ -1112,7 +1121,7 @@ export default function App() {
         )}
 
         {/* ===================== PAGE: SUPER ADMIN DASHBOARD ===================== */}
-        {currentPage === 'admin' && (
+        {currentPage === 'admin' && isAdminAuthenticated && (
           <AdminPanel
             products={products}
             categories={categories}
