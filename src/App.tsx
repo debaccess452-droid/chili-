@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { CartItem, CustomerQuery, Order, PageId, Product, Review, UserSession } from './types';
 import { 
@@ -22,6 +22,12 @@ import {
   buildUserSession 
 } from './services/authService';
 import { fetchProducts, fetchCategories } from './services/catalogService';
+import { 
+  createProduct, 
+  updateProduct, 
+  deleteProduct, 
+  toggleProductStock 
+} from './services/productService';
 import { 
   fetchCart, 
   addToCart, 
@@ -110,6 +116,11 @@ export default function App() {
   const [isResetPasswordOpen, setIsResetPasswordOpen] = useState(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [isAuthRestoring, setIsAuthRestoring] = useState(true);
+
+  // Component lifecycle and async race-condition guards
+  const isMountedRef = useRef(true);
+  const isMergingCartRef = useRef(false);
 
   // Product filtering & search
   const [selectedCategory, setSelectedCategory] = useState<string>('All Spices');
@@ -125,7 +136,10 @@ export default function App() {
 
   // Helper to synchronize Supabase user & role with frontend state
   const syncUserFromSession = useCallback(async (user: User | null) => {
+    if (!isMountedRef.current) return;
+
     if (!user) {
+      console.log('[Auth] syncUserFromSession: unauthenticated state');
       setCurrentUser(null);
       setIsAdminAuthenticated(false);
       setUsers([]);
@@ -139,47 +153,75 @@ export default function App() {
     }
 
     try {
-      const profile = await fetchUserProfile(user.id);
-      const isAdmin = await checkIsAdmin(user.id);
+      console.log('[Auth] syncUserFromSession: synchronizing profile and role for user ID:', user.id);
+      const [profile, isAdmin] = await Promise.all([
+        fetchUserProfile(user.id),
+        checkIsAdmin(user.id),
+      ]);
+
+      if (!isMountedRef.current) return;
+
       const sessionUser = buildUserSession(user, profile, isAdmin ? 'admin' : 'customer');
       setCurrentUser(sessionUser);
       setIsAdminAuthenticated(isAdmin);
 
       // Authenticated customer: Supabase cart is the source of truth
-      try {
-        const guestItems = getStoredCart();
-        if (guestItems.length > 0) {
-          const mergedCart = await mergeGuestCart(user.id, guestItems);
-          setCart(mergedCart);
-          saveStoredCart([]); // Clear guest localStorage cart after safe merge
-        } else {
-          const customerCart = await fetchCart(user.id);
-          setCart(customerCart);
+      // Safe merge guard to prevent duplicate concurrent merges
+      if (!isMergingCartRef.current) {
+        isMergingCartRef.current = true;
+        try {
+          const guestItems = getStoredCart();
+          if (guestItems.length > 0) {
+            console.log('[Auth] Merging guest items into Supabase cart for user ID:', user.id);
+            const mergedCart = await mergeGuestCart(user.id, guestItems);
+            if (isMountedRef.current) {
+              setCart(mergedCart);
+            }
+            saveStoredCart([]); // Clear guest localStorage cart after safe merge
+          } else {
+            const customerCart = await fetchCart(user.id);
+            if (isMountedRef.current) {
+              setCart(customerCart);
+            }
+          }
+        } catch (cartErr) {
+          console.error('[Auth] Failed to sync customer cart from Supabase:', cartErr);
+        } finally {
+          isMergingCartRef.current = false;
         }
-      } catch (cartErr) {
-        console.error('Failed to sync customer cart from Supabase:', cartErr);
       }
 
       if (isAdmin) {
         const customerProfiles = await fetchAllCustomerProfiles();
-        setUsers(customerProfiles);
+        if (isMountedRef.current) {
+          setUsers(customerProfiles);
+        }
       } else {
-        setUsers([]);
+        if (isMountedRef.current) {
+          setUsers([]);
+        }
         if (window.location.hash.replace('#', '').toLowerCase() === 'admin') {
-          setCurrentPage('home');
-          window.location.hash = '';
+          if (isMountedRef.current) {
+            setCurrentPage('home');
+            window.location.hash = '';
+          }
         }
       }
     } catch (err) {
-      console.error('Error synchronizing profile data:', err);
+      console.error('[Auth] Error synchronizing profile data:', err);
     }
   }, []);
 
   // Centralized Admin Access Verification against Supabase RBAC
   const requestAdminAccess = useCallback(async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) {
+        console.warn('[Auth] getSession error during admin access request:', sessionError.message);
+      }
+
       if (!session?.user) {
+        console.log('[Auth] requestAdminAccess: No authenticated session found');
         setIsAdminModalOpen(true);
         if (window.location.hash.replace('#', '').toLowerCase() === 'admin') {
           setCurrentPage('home');
@@ -188,21 +230,28 @@ export default function App() {
         return;
       }
 
+      console.log('[Auth] Verifying admin role in user_roles for user ID:', session.user.id);
       const isAdmin = await checkIsAdmin(session.user.id);
+      if (!isMountedRef.current) return;
+
       if (isAdmin) {
+        console.log('[Auth] Admin authorization granted for user ID:', session.user.id);
         setIsAdminAuthenticated(true);
         setCurrentPage('admin');
         window.location.hash = 'admin';
         const customerProfiles = await fetchAllCustomerProfiles();
-        setUsers(customerProfiles);
+        if (isMountedRef.current) {
+          setUsers(customerProfiles);
+        }
       } else {
+        console.warn('[Auth] Admin authorization denied for user ID:', session.user.id);
         setIsAdminAuthenticated(false);
         showToast('Access Denied: Your account does not have administrator authorization.');
         setCurrentPage('home');
         window.location.hash = '';
       }
     } catch (err) {
-      console.error('Error verifying admin authorization:', err);
+      console.error('[Auth] Error verifying admin authorization:', err);
       showToast('Unable to connect to the authentication service.');
     }
   }, []);
@@ -425,33 +474,106 @@ export default function App() {
     window.location.hash = page === 'home' ? '' : page;
   };
 
-  // Product Add / Update / Delete handlers (React state updates)
-  const handleAddProduct = (newProduct: Product) => {
-    const updated = [newProduct, ...products];
-    setProducts(updated);
-    showToast(`"${newProduct.name}" uploaded successfully and is now live!`);
+  // Product Add / Update / Delete handlers (Real Supabase persistence)
+  const handleAddProduct = async (newProduct: Product, file?: File | null) => {
+    console.log('[App] handleAddProduct invoked for:', newProduct.name);
+    try {
+      const created = await createProduct(
+        {
+          name: newProduct.name,
+          category: newProduct.category,
+          sku: newProduct.sku,
+          description: newProduct.description,
+          shortDescription: newProduct.shortDescription,
+          image: newProduct.image,
+          stockQuantity: newProduct.stockQuantity,
+          inStock: newProduct.inStock,
+          isFeatured: newProduct.isFeatured,
+          variants: newProduct.variants,
+        },
+        file
+      );
+      setProducts((prev) => [created, ...prev.filter((p) => p.id !== created.id)]);
+      await loadCatalog();
+      showToast(`"${newProduct.name}" uploaded successfully and is now live!`);
+      return true;
+    } catch (err: any) {
+      console.error('[App] Failed to create product in Supabase:', err);
+      showToast(err.message || 'Failed to save product to database.');
+      throw err;
+    }
   };
 
-  const handleUpdateProduct = (updatedProduct: Product) => {
-    const updated = products.map((p) => (p.id === updatedProduct.id ? updatedProduct : p));
-    setProducts(updated);
-    showToast(`Updated "${updatedProduct.name}" details.`);
+  const handleUpdateProduct = async (updatedProduct: Product, file?: File | null) => {
+    console.log('[App] handleUpdateProduct invoked for:', updatedProduct.name, updatedProduct.id);
+    try {
+      const updated = await updateProduct(
+        updatedProduct.id,
+        {
+          name: updatedProduct.name,
+          category: updatedProduct.category,
+          sku: updatedProduct.sku,
+          description: updatedProduct.description,
+          shortDescription: updatedProduct.shortDescription,
+          image: updatedProduct.image,
+          stockQuantity: updatedProduct.stockQuantity,
+          inStock: updatedProduct.inStock,
+          isFeatured: updatedProduct.isFeatured,
+          variants: updatedProduct.variants,
+        },
+        file
+      );
+      setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      await loadCatalog();
+      showToast(`Updated "${updatedProduct.name}" details.`);
+      return true;
+    } catch (err: any) {
+      console.error('[App] Failed to update product in Supabase:', err);
+      showToast(err.message || 'Failed to update product in database.');
+      throw err;
+    }
   };
 
-  const handleDeleteProduct = (productId: number | string) => {
-    const updated = products.filter((p) => p.id !== productId);
-    setProducts(updated);
-    showToast('Product removed from store.');
-  };
-
-  const handleToggleStock = (productId: number | string) => {
-    const updated = products.map((p) => {
-      if (p.id === productId) {
-        return { ...p, inStock: !p.inStock };
+  const handleDeleteProduct = async (productId: number | string) => {
+    console.log('[App] handleDeleteProduct invoked for:', productId);
+    try {
+      const res = await deleteProduct(productId);
+      if (res.deleted) {
+        setProducts((prev) => prev.filter((p) => p.id !== productId));
+      } else {
+        setProducts((prev) =>
+          prev.map((p) => (p.id === productId ? { ...p, inStock: false, stockQuantity: 0 } : p))
+        );
       }
-      return p;
-    });
-    setProducts(updated);
+      await loadCatalog();
+      showToast(res.message);
+      return true;
+    } catch (err: any) {
+      console.error('[App] Failed to delete product from Supabase:', err);
+      showToast(err.message || 'Failed to remove product.');
+      throw err;
+    }
+  };
+
+  const handleToggleStock = async (productId: number | string) => {
+    console.log('[App] handleToggleStock invoked for:', productId);
+    const existing = products.find((p) => p.id === productId);
+    if (!existing) return false;
+    try {
+      const nextStatus = await toggleProductStock(productId, existing.inStock);
+      setProducts((prev) =>
+        prev.map((p) => (p.id === productId ? { ...p, inStock: nextStatus } : p))
+      );
+      await loadCatalog();
+      showToast(
+        `"${existing.name}" marked as ${nextStatus ? 'In Stock (Available)' : 'Out of Stock'}.`
+      );
+      return true;
+    } catch (err: any) {
+      console.error('[App] Failed to toggle stock in Supabase:', err);
+      showToast(err.message || 'Failed to update stock status.');
+      throw err;
+    }
   };
 
   // Cart operations

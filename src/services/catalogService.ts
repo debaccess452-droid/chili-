@@ -94,7 +94,7 @@ export function resolveProductImage(imagePath?: any): string {
   }
 
   // Prepend Supabase Storage public bucket URL
-  const bucketName = 'products';
+  const bucketName = 'product-images';
   if (clean.startsWith(`${bucketName}/`)) {
     return `${cleanBase}/storage/v1/object/public/${clean}`;
   }
@@ -123,11 +123,12 @@ export function parseWeightInGrams(weightVal: any): number {
  * Robust against nulls, array vs object PostgREST relationships, and numeric weights.
  */
 export function mapSupabaseProductToProduct(dbProduct: SupabaseProduct): Product {
-  // PostgREST relation handling: variants can be an array, a single object, or null
-  const rawVariants: any[] = Array.isArray(dbProduct.variants)
-    ? dbProduct.variants
-    : dbProduct.variants && typeof dbProduct.variants === 'object'
-    ? [dbProduct.variants]
+  // PostgREST relation handling: variants can be in 'variants' or 'product_variants'
+  const variantsField = dbProduct.variants || (dbProduct as any).product_variants;
+  const rawVariants: any[] = Array.isArray(variantsField)
+    ? variantsField
+    : variantsField && typeof variantsField === 'object'
+    ? [variantsField]
     : [];
 
   const sortedVariants = [...rawVariants].sort(
@@ -156,6 +157,9 @@ export function mapSupabaseProductToProduct(dbProduct: SupabaseProduct): Product
     };
   });
 
+  const finalVariants: ProductVariant[] =
+    mappedVariants.length > 0 ? mappedVariants : [{ weight: '100g', price: 50 }];
+
   const inStock = Boolean(
     dbProduct.in_stock !== false &&
       (dbProduct.stock_quantity === undefined ||
@@ -178,13 +182,13 @@ export function mapSupabaseProductToProduct(dbProduct: SupabaseProduct): Product
     category: resolvedCategoryName,
     inStock,
     image: resolveProductImage(dbProduct.image_path),
-    variants: mappedVariants,
+    variants: finalVariants,
     description: dbProduct.description || undefined,
     shortDescription: dbProduct.short_description || undefined,
     sku: dbProduct.sku || undefined,
     stockQuantity: dbProduct.stock_quantity ?? 0,
     isFeatured: Boolean(dbProduct.is_featured),
-    salePrice: mappedVariants[0]?.salePrice,
+    salePrice: finalVariants[0]?.salePrice,
   };
 }
 
@@ -200,7 +204,7 @@ export async function fetchCategories(): Promise<string[]> {
       .order('sort_order', { ascending: true });
 
     if (error) {
-      console.error('Error fetching categories from Supabase:', error.message);
+      console.error('[CatalogService] Error fetching categories from Supabase:', error.message);
       return ['All Spices'];
     }
 
@@ -210,7 +214,7 @@ export async function fetchCategories(): Promise<string[]> {
 
     return ['All Spices', ...categoryNames.filter((name) => name !== 'All Spices')];
   } catch (err) {
-    console.error('Unexpected error fetching categories:', err);
+    console.error('[CatalogService] Unexpected error fetching categories:', err);
     return ['All Spices'];
   }
 }
@@ -219,8 +223,24 @@ export async function fetchCategories(): Promise<string[]> {
  * Fetch all products with their categories and variants from Supabase
  */
 export async function fetchProducts(): Promise<Product[]> {
+  console.log('[CatalogService] Fetching all products from Supabase...');
   try {
     const { data, error } = await supabase
+      .from('products')
+      .select(`
+        *,
+        categories(*),
+        product_variants(*)
+      `)
+      .order('created_at', { ascending: false });
+
+    if (!error && data && Array.isArray(data)) {
+      console.log(`[CatalogService] Loaded ${data.length} products with joined relations.`);
+      return data.map((item) => mapSupabaseProductToProduct(item as SupabaseProduct));
+    }
+
+    // Fallback: query with aliases
+    const { data: aliasData, error: aliasErr } = await supabase
       .from('products')
       .select(`
         *,
@@ -229,19 +249,43 @@ export async function fetchProducts(): Promise<Product[]> {
       `)
       .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching products from Supabase:', error.message);
-      throw new Error('Unable to load spice collection from Supabase.');
+    if (!aliasErr && aliasData && Array.isArray(aliasData)) {
+      console.log(`[CatalogService] Loaded ${aliasData.length} products with aliased relations.`);
+      return aliasData.map((item) => mapSupabaseProductToProduct(item as SupabaseProduct));
     }
 
-    if (!data || !Array.isArray(data)) {
+    // Fallback: sequential query if joins fail
+    console.warn('[CatalogService] Join queries returned error, falling back to sequential fetch...');
+    const { data: prods, error: pErr } = await supabase
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (pErr || !prods) {
+      console.error('[CatalogService] Failed to load products:', pErr?.message);
       return [];
     }
 
-    return data.map((item) => mapSupabaseProductToProduct(item as SupabaseProduct));
+    const { data: allVariants } = await supabase
+      .from('product_variants')
+      .select('*');
+
+    const variantMap = new Map<string, any[]>();
+    (allVariants || []).forEach((v) => {
+      const pid = String(v.product_id);
+      if (!variantMap.has(pid)) variantMap.set(pid, []);
+      variantMap.get(pid)!.push(v);
+    });
+
+    return prods.map((p) =>
+      mapSupabaseProductToProduct({
+        ...p,
+        variants: variantMap.get(String(p.id)) || [],
+      })
+    );
   } catch (err: any) {
-    console.error('Error loading products from Supabase:', err);
-    throw new Error(err.message || 'Unable to load spice collection from Supabase.');
+    console.error('[CatalogService] Error loading products from Supabase:', err);
+    return [];
   }
 }
 
@@ -249,24 +293,58 @@ export async function fetchProducts(): Promise<Product[]> {
  * Fetch a single product by ID with its category and variants from Supabase
  */
 export async function fetchProductById(id: string | number): Promise<Product | null> {
+  const pIdStr = String(id);
   try {
     const { data, error } = await supabase
+      .from('products')
+      .select(`
+        *,
+        categories(*),
+        product_variants(*)
+      `)
+      .eq('id', pIdStr)
+      .maybeSingle();
+
+    if (!error && data) {
+      return mapSupabaseProductToProduct(data as SupabaseProduct);
+    }
+
+    const { data: aliasData, error: aliasError } = await supabase
       .from('products')
       .select(`
         *,
         category:categories(*),
         variants:product_variants(*)
       `)
-      .eq('id', id)
+      .eq('id', pIdStr)
       .maybeSingle();
 
-    if (error || !data) {
+    if (!aliasError && aliasData) {
+      return mapSupabaseProductToProduct(aliasData as SupabaseProduct);
+    }
+
+    // Fallback: fetch product and variants separately
+    const { data: simpleData, error: simpleError } = await supabase
+      .from('products')
+      .select('*')
+      .eq('id', pIdStr)
+      .maybeSingle();
+
+    if (simpleError || !simpleData) {
       return null;
     }
 
-    return mapSupabaseProductToProduct(data as SupabaseProduct);
+    const { data: variantData } = await supabase
+      .from('product_variants')
+      .select('*')
+      .eq('product_id', pIdStr);
+
+    return mapSupabaseProductToProduct({
+      ...simpleData,
+      variants: variantData || [],
+    });
   } catch (err) {
-    console.error('Error fetching product by id from Supabase:', err);
+    console.error(`[CatalogService] Error fetching product by id (${pIdStr}) from Supabase:`, err);
     return null;
   }
 }

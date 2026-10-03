@@ -56,6 +56,7 @@ export async function signUpCustomer({
   });
 
   if (error) {
+    console.warn('[AuthService] signUpCustomer error message:', error.message);
     const msg = error.message.toLowerCase();
     if (
       msg.includes('already registered') ||
@@ -73,6 +74,8 @@ export async function signUpCustomer({
   if (!data.user) {
     throw new Error('Failed to create customer account. Please try again.');
   }
+
+  console.log('[AuthService] signUpCustomer created user ID:', data.user.id, 'session exists:', Boolean(data.session));
 
   // After signup, fetch the profile using its id created by the database trigger
   let profile: UserProfile | null = await fetchUserProfile(data.user.id);
@@ -117,6 +120,7 @@ export async function signInCustomer(email: string, password: string): Promise<A
   });
 
   if (error) {
+    console.warn('[AuthService] signInCustomer failed:', error.message);
     const msg = error.message.toLowerCase();
     if (msg.includes('invalid login credentials') || msg.includes('invalid credentials')) {
       throw new Error('Invalid email or password.');
@@ -133,6 +137,8 @@ export async function signInCustomer(email: string, password: string): Promise<A
   if (!data.user) {
     throw new Error('Login failed: user not found.');
   }
+
+  console.log('[AuthService] signInCustomer authenticated user ID:', data.user.id);
 
   // Fetch profile and role from Supabase
   const profile = await fetchUserProfile(data.user.id);
@@ -165,6 +171,7 @@ export async function signInAdmin(email: string, password: string): Promise<Auth
   });
 
   if (error) {
+    console.warn('[AuthService] signInAdmin failed:', error.message);
     const msg = error.message.toLowerCase();
     if (msg.includes('invalid login credentials') || msg.includes('invalid credentials')) {
       throw new Error('Invalid email or password.');
@@ -187,12 +194,18 @@ export async function signInAdmin(email: string, password: string): Promise<Auth
     .eq('role', 'admin')
     .maybeSingle();
 
+  if (roleError) {
+    console.error('[AuthService] signInAdmin role verification query error:', roleError.message);
+  }
+
   if (roleError || !roleRecord || roleRecord.role !== 'admin') {
+    console.warn('[AuthService] Access Denied: User ID', data.user.id, 'does not have admin role in user_roles. Signing out.');
     // Non-admin attempting admin login must be signed out immediately
     await supabase.auth.signOut();
     throw new Error('Access Denied: Your account does not have administrator authorization.');
   }
 
+  console.log('[AuthService] Admin verified in user_roles for user ID:', data.user.id);
   const profile = await fetchUserProfile(data.user.id);
 
   return {
@@ -219,13 +232,16 @@ export async function checkIsAdmin(userId: string): Promise<boolean> {
       .eq('role', 'admin')
       .maybeSingle();
 
-    if (!error && data && data.role === 'admin') {
-      return true;
+    if (error) {
+      console.warn('[AuthService] checkIsAdmin query error for user ID:', userId, error.message);
+      return false;
     }
 
-    return false;
+    const isAdmin = Boolean(data && data.role === 'admin');
+    console.log('[AuthService] checkIsAdmin result for user ID:', userId, 'isAdmin:', isAdmin);
+    return isAdmin;
   } catch (err) {
-    console.error('Error verifying admin authorization:', err);
+    console.error('[AuthService] Error verifying admin authorization for user ID:', userId, err);
     return false;
   }
 }
@@ -244,12 +260,19 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile | nu
       .eq('id', userId)
       .maybeSingle();
 
-    if (error || !data) {
+    if (error) {
+      console.warn('[AuthService] fetchUserProfile error for user ID:', userId, error.message);
+      return null;
+    }
+
+    if (!data) {
+      console.log('[AuthService] fetchUserProfile: no row returned for user ID:', userId);
       return null;
     }
 
     return data as UserProfile;
-  } catch {
+  } catch (err) {
+    console.error('[AuthService] fetchUserProfile exception for user ID:', userId, err);
     return null;
   }
 }
@@ -258,8 +281,28 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile | nu
  * Fetch role for a user ('admin' from user_roles or default to 'customer')
  */
 export async function fetchUserRole(userId: string): Promise<AppRole> {
-  const isAdmin = await checkIsAdmin(userId);
-  return isAdmin ? 'admin' : 'customer';
+  if (!isSupabaseConfigured || !userId) return 'customer';
+
+  try {
+    const { data, error } = await supabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[AuthService] fetchUserRole error for user ID:', userId, error.message);
+      return 'customer';
+    }
+
+    if (data?.role === 'admin') {
+      return 'admin';
+    }
+    return 'customer';
+  } catch (err) {
+    console.error('[AuthService] fetchUserRole exception for user ID:', userId, err);
+    return 'customer';
+  }
 }
 
 /**
@@ -334,8 +377,14 @@ export async function fetchAllCustomerProfiles(): Promise<UserSession[]> {
  * Sign out current user from Supabase
  */
 export async function signOutUser(): Promise<void> {
+  console.log('[AuthService] signOutUser called');
   if (isSupabaseConfigured) {
-    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.warn('[AuthService] signOutUser error:', error.message);
+    } else {
+      console.log('[AuthService] signOutUser completed successfully');
+    }
   }
 }
 
@@ -362,6 +411,7 @@ export function buildUserSession(
  * Send password reset email to customer via Supabase resetPasswordForEmail
  */
 export async function sendPasswordResetEmail(email: string): Promise<void> {
+  console.log('[AuthService] sendPasswordResetEmail called');
   if (!isSupabaseConfigured) {
     throw new Error(
       'Unable to connect to the authentication service. Supabase environment variables are missing.'
@@ -380,18 +430,22 @@ export async function sendPasswordResetEmail(email: string): Promise<void> {
   });
 
   if (error) {
+    console.warn('[AuthService] sendPasswordResetEmail error:', error.message);
     const msg = error.message.toLowerCase();
     if (msg.includes('rate limit')) {
       throw new Error('Too many requests. Please wait a few moments before trying again.');
     }
     throw new Error(error.message || 'Failed to send password reset email. Please try again.');
   }
+
+  console.log('[AuthService] sendPasswordResetEmail: password recovery email dispatched');
 }
 
 /**
  * Update user password after recovery via Supabase updateUser({ password })
  */
 export async function updateUserPassword(newPassword: string): Promise<void> {
+  console.log('[AuthService] updateUserPassword called');
   if (!isSupabaseConfigured) {
     throw new Error(
       'Unable to connect to the authentication service. Supabase environment variables are missing.'
@@ -407,6 +461,7 @@ export async function updateUserPassword(newPassword: string): Promise<void> {
   });
 
   if (error) {
+    console.warn('[AuthService] updateUserPassword error:', error.message);
     const msg = error.message.toLowerCase();
     if (msg.includes('same password')) {
       throw new Error('New password must be different from previous password.');
@@ -416,4 +471,6 @@ export async function updateUserPassword(newPassword: string): Promise<void> {
     }
     throw new Error(error.message || 'Failed to update password. Please try again.');
   }
+
+  console.log('[AuthService] updateUserPassword completed successfully');
 }

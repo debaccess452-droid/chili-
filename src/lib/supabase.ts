@@ -1,8 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Environment variables for Supabase - single source of truth
-const rawUrl = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) || '';
-const rawAnonKey = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) || '';
+const rawUrl = 
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) || 
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_URL) || 
+  '';
+const rawAnonKey = 
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) || 
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) || 
+  '';
 
 // Target project URL
 export const SUPABASE_URL = 
@@ -10,17 +16,21 @@ export const SUPABASE_URL =
     ? rawUrl.trim().replace(/\/+$/, '')
     : 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
 
-// Helper to detect placeholder credentials
+// Helper to detect placeholder or misconfigured credentials (e.g. URLs accidentally set as keys)
 function isPlaceholder(value: string): boolean {
   if (!value) return true;
   const lower = value.toLowerCase().trim();
   return (
+    lower === '' ||
     lower === 'your-anon-key' ||
     lower === 'your_anon_key' ||
     lower === 'placeholder' ||
     lower === 'placeholder-anon-key' ||
     lower === 'your-anon-key-here' ||
-    lower === 'anon_key'
+    lower === 'anon_key' ||
+    lower.startsWith('http://') ||
+    lower.startsWith('https://') ||
+    lower.includes('supabase.co')
   );
 }
 

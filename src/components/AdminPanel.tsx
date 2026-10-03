@@ -30,10 +30,10 @@ interface AdminPanelProps {
   users: UserSession[];
   queries: CustomerQuery[];
   reviews: Review[];
-  onAddProduct: (product: Product) => void;
-  onUpdateProduct: (product: Product) => void;
-  onDeleteProduct: (productId: number | string) => void;
-  onToggleStock: (productId: number | string) => void;
+  onAddProduct: (product: Product, file?: File | null) => Promise<boolean | void> | void;
+  onUpdateProduct: (product: Product, file?: File | null) => Promise<boolean | void> | void;
+  onDeleteProduct: (productId: number | string) => Promise<boolean | void> | void;
+  onToggleStock: (productId: number | string) => Promise<boolean | void> | void;
   onUpdateOrderStatus: (orderIndex: number, newStatus: Order['status']) => void;
   onDeleteOrder: (orderId: string) => void;
   onDeleteQuery: (queryId: number) => void;
@@ -64,20 +64,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 }) => {
   const [currentTab, setCurrentTab] = useState<AdminTab>('orders');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editError, setEditError] = useState('');
   const [orderFilter, setOrderFilter] = useState<'All' | Order['status']>('All');
 
   const validCategories = (categories || []).filter((c) => Boolean(c && c !== 'All Spices'));
-  const defaultCategory = validCategories.length > 0 ? validCategories[0] : '';
+  const categoriesList = validCategories.length > 0 
+    ? validCategories 
+    : ['Pure Spices', 'Ground Spices', 'Whole Spices', 'Blended Spices'];
+  const defaultCategory = categoriesList[0];
 
   // Product Upload Form State
   const [pName, setPName] = useState('');
   const [pCategory, setPCategory] = useState(defaultCategory);
 
   React.useEffect(() => {
-    if (!pCategory && validCategories.length > 0) {
-      setPCategory(validCategories[0]);
+    if (!pCategory && categoriesList.length > 0) {
+      setPCategory(categoriesList[0]);
     }
-  }, [validCategories, pCategory]);
+  }, [categoriesList, pCategory]);
   const [pSku, setPSku] = useState('');
   const [pStockQuantity, setPStockQuantity] = useState(100);
   const [pInStock, setPInStock] = useState(true);
@@ -86,8 +90,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [pDesc, setPDesc] = useState('');
   const [pImagePreview, setPImagePreview] = useState<string>('');
   const [pImageUrlInput, setPImageUrlInput] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [imageError, setImageError] = useState('');
   const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   // Variant weights & prices
   const [variants, setVariants] = useState<ProductVariant[]>([
@@ -119,20 +126,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (typeof event.target?.result === 'string') {
-        setPImagePreview(event.target.result);
-      }
-    };
-    reader.onerror = () => {
-      setImageError('Failed to read image file. Please try again.');
-    };
-    reader.readAsDataURL(file);
+    setSelectedFile(file);
+    // Use local object URL for instant UI preview without base64 in state/db
+    const objectUrl = URL.createObjectURL(file);
+    setPImagePreview(objectUrl);
+  };
+
+  const handleRemoveImage = () => {
+    setSelectedFile(null);
+    setPImagePreview('');
+    setPImageUrlInput('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const handleApplyImageUrl = () => {
     if (!pImageUrlInput.trim()) return;
+    setSelectedFile(null);
     setPImagePreview(pImageUrlInput.trim());
     setImageError('');
   };
@@ -143,42 +154,55 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setVariants(updated);
   };
 
-  const handleUploadSubmit = (e: React.FormEvent) => {
+  const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pName.trim()) {
-      alert('Product name is required!');
+      setImageError('Product title / name is required.');
       return;
     }
-    const finalImage = pImagePreview.trim() || pImageUrlInput.trim() || SVG_PLACEHOLDER_IMAGE;
 
-    const newProduct: Product = {
-      id: Date.now(),
-      name: pName.trim(),
-      category: pCategory,
-      sku: pSku.trim() || `KBR-${pName.slice(0, 3).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`,
-      stockQuantity: Number(pStockQuantity) || 50,
-      inStock: pInStock,
-      isFeatured: pIsFeatured,
-      image: finalImage,
-      variants: variants.map((v) => ({ ...v, price: Number(v.price) || 0 })),
-      shortDescription: pShortDesc.trim() || `${pCategory} from KBR Global Ventures`,
-      description: pDesc.trim() || `${pName} prepared with traditional hygienic standards.`,
-    };
+    setIsUploading(true);
+    setImageError('');
 
-    onAddProduct(newProduct);
-    setUploadSuccess(true);
+    try {
+      const newProduct: Product = {
+        id: '',
+        name: pName.trim(),
+        category: pCategory,
+        sku: pSku.trim() || `KBR-${pName.slice(0, 3).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`,
+        stockQuantity: Number(pStockQuantity) || 50,
+        inStock: pInStock,
+        isFeatured: pIsFeatured,
+        image: pImageUrlInput.trim() || '',
+        variants: variants.map((v) => ({ ...v, price: Number(v.price) || 0 })),
+        shortDescription: pShortDesc.trim() || `${pCategory} from KBR Global Ventures`,
+        description: pDesc.trim() || `${pName} prepared with traditional hygienic standards.`,
+      };
 
-    // Reset Form
-    setTimeout(() => {
-      setPName('');
-      setPSku('');
-      setPShortDesc('');
-      setPDesc('');
-      setPImagePreview('');
-      setPImageUrlInput('');
-      setUploadSuccess(false);
-      setCurrentTab('products');
-    }, 1200);
+      const result = await onAddProduct(newProduct, selectedFile);
+      if (result !== false) {
+        setUploadSuccess(true);
+
+        // Reset Form
+        setTimeout(() => {
+          setPName('');
+          setPSku('');
+          setPShortDesc('');
+          setPDesc('');
+          setPImagePreview('');
+          setPImageUrlInput('');
+          setSelectedFile(null);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          setUploadSuccess(false);
+          setCurrentTab('products');
+        }, 1200);
+      }
+    } catch (err: any) {
+      console.error('Error in handleUploadSubmit:', err);
+      setImageError(err.message || 'Failed to upload product.');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   // Filtered orders
@@ -407,11 +431,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         />
                         <button
                           type="button"
-                          onClick={() => {
-                            setPImagePreview('');
-                            setPImageUrlInput('');
-                          }}
-                          className="absolute top-2 right-2 p-1.5 bg-red-600 text-white rounded-full shadow hover:bg-red-700"
+                          onClick={handleRemoveImage}
+                          className="absolute top-2 right-2 p-1.5 bg-red-600 text-white rounded-full shadow hover:bg-red-700 cursor-pointer"
                           title="Remove image"
                         >
                           <X className="w-4 h-4" />
@@ -453,7 +474,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     onChange={(e) => setPCategory(e.target.value)}
                     className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none cursor-pointer"
                   >
-                    {validCategories.map((cat) => (
+                    {categoriesList.map((cat) => (
                       <option key={cat} value={cat}>
                         {cat}
                       </option>
@@ -578,10 +599,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
                 <button
                   type="submit"
-                  className="w-full sm:w-auto bg-gradient-to-r from-emerald-700 to-emerald-800 hover:from-emerald-800 hover:to-emerald-900 text-white font-extrabold px-8 py-3.5 rounded-xl shadow-lg transition transform active:scale-98 flex items-center justify-center gap-2 text-sm"
+                  disabled={isUploading}
+                  className="w-full sm:w-auto bg-gradient-to-r from-emerald-700 to-emerald-800 hover:from-emerald-800 hover:to-emerald-900 text-white font-extrabold px-8 py-3.5 rounded-xl shadow-lg transition transform active:scale-98 flex items-center justify-center gap-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
                 >
                   <Upload className="w-4 h-4" />
-                  <span>Save & Publish Product to Store</span>
+                  <span>{isUploading ? 'Uploading to Supabase...' : 'Save & Publish Product to Store'}</span>
                 </button>
 
                 <button
@@ -674,19 +696,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => setEditingProduct(p)}
-                          className="text-xs bg-royal-900 text-white font-bold px-3 py-1.5 rounded-xl hover:bg-royal-950 transition flex items-center gap-1"
+                          onClick={() => {
+                            setEditError('');
+                            setEditingProduct(p);
+                          }}
+                          className="text-xs bg-royal-900 text-white font-bold px-3 py-1.5 rounded-xl hover:bg-royal-950 transition flex items-center gap-1 cursor-pointer"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                           <span>Quick Edit</span>
                         </button>
                         <button
-                          onClick={() => {
-                            if (confirm(`Are you sure you want to remove "${p.name}"?`)) {
-                              onDeleteProduct(p.id);
+                          onClick={async () => {
+                            let shouldDelete = true;
+                            try {
+                              if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+                                shouldDelete = window.confirm(`Are you sure you want to remove "${p.name}"?`);
+                              }
+                            } catch {
+                              shouldDelete = true;
+                            }
+                            if (shouldDelete) {
+                              await onDeleteProduct(p.id);
                             }
                           }}
-                          className="text-xs text-red-600 hover:text-red-800 p-1.5 rounded-lg hover:bg-red-50 transition"
+                          className="text-xs text-red-600 hover:text-red-800 p-1.5 rounded-lg hover:bg-red-50 transition cursor-pointer"
                           title="Delete Product"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -968,14 +1001,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {/* QUICK EDIT PRODUCT MODAL */}
       {editingProduct && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border-2 border-royal-950 shadow-2xl my-auto animate-in fade-in">
-            <div className="flex justify-between items-center mb-4 border-b pb-3">
-              <h3 className="font-bold text-lg text-royal-950">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border-2 border-royal-950 shadow-2xl my-auto animate-in fade-in max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4 border-b pb-3 sticky top-0 bg-white z-10">
+              <h3 className="font-bold text-lg text-royal-950 truncate pr-2">
                 Quick Edit: {editingProduct.name}
               </h3>
               <button
                 onClick={() => setEditingProduct(null)}
-                className="text-gray-400 hover:text-gray-700"
+                className="text-gray-400 hover:text-gray-700 cursor-pointer p-1"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -983,33 +1016,55 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">Product Name</label>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Product Name *</label>
                 <input
                   type="text"
                   value={editingProduct.name}
                   onChange={(e) =>
                     setEditingProduct({ ...editingProduct, name: e.target.value })
                   }
-                  className="w-full px-3 py-2 border rounded-xl text-sm"
+                  required
+                  className="w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-gray-700 mb-1">Category</label>
-                  <input
-                    type="text"
-                    value={editingProduct.category || ''}
+                  <select
+                    value={editingProduct.category || defaultCategory}
                     onChange={(e) =>
                       setEditingProduct({ ...editingProduct, category: e.target.value })
                     }
-                    className="w-full px-3 py-2 border rounded-xl text-sm"
+                    className="w-full px-3 py-2 border rounded-xl text-sm bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  >
+                    {validCategories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">SKU</label>
+                  <input
+                    type="text"
+                    value={editingProduct.sku || ''}
+                    onChange={(e) =>
+                      setEditingProduct({ ...editingProduct, sku: e.target.value })
+                    }
+                    placeholder="e.g. KBR-HLD-101"
+                    className="w-full px-3 py-2 border rounded-xl text-sm font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   />
                 </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-gray-700 mb-1">Stock Quantity</label>
                   <input
                     type="number"
+                    min={0}
                     value={editingProduct.stockQuantity ?? 100}
                     onChange={(e) =>
                       setEditingProduct({
@@ -1017,43 +1072,138 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         stockQuantity: Number(e.target.value),
                       })
                     }
-                    className="w-full px-3 py-2 border rounded-xl text-sm"
+                    className="w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Stock Status</label>
+                  <select
+                    value={editingProduct.inStock ? 'true' : 'false'}
+                    onChange={(e) =>
+                      setEditingProduct({
+                        ...editingProduct,
+                        inStock: e.target.value === 'true',
+                      })
+                    }
+                    className="w-full px-3 py-2 border rounded-xl text-sm bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  >
+                    <option value="true">In Stock (Available)</option>
+                    <option value="false">Out of Stock</option>
+                  </select>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">Stock Status</label>
-                <select
-                  value={editingProduct.inStock ? 'true' : 'false'}
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="editFeatured"
+                  checked={Boolean(editingProduct.isFeatured)}
                   onChange={(e) =>
                     setEditingProduct({
                       ...editingProduct,
-                      inStock: e.target.value === 'true',
+                      isFeatured: e.target.checked,
                     })
                   }
-                  className="w-full px-3 py-2 border rounded-xl text-sm bg-white"
-                >
-                  <option value="true">In Stock (Available)</option>
-                  <option value="false">Out of Stock</option>
-                </select>
+                  className="rounded text-amber-800"
+                />
+                <label htmlFor="editFeatured" className="text-xs font-bold text-gray-800 cursor-pointer">
+                  Featured On Home Page
+                </label>
               </div>
+
+              {/* Variant Pricing in Quick Edit */}
+              {editingProduct.variants && editingProduct.variants.length > 0 && (
+                <div className="bg-gray-50 p-3 rounded-xl border">
+                  <label className="block text-xs font-bold text-royal-950 uppercase tracking-wider mb-2">
+                    Variant Prices (INR ₹)
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {editingProduct.variants.map((v, vIdx) => (
+                      <div key={v.weight || vIdx} className="bg-white p-2 rounded-lg border">
+                        <span className="block text-[11px] font-bold text-gray-600 mb-1 text-center bg-amber-50 py-0.5 rounded">
+                          {v.weight}
+                        </span>
+                        <div className="relative">
+                          <span className="absolute inset-y-0 left-0 pl-1.5 flex items-center text-xs text-gray-400 font-bold">
+                            ₹
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={v.price}
+                            onChange={(e) => {
+                              const newPrice = Number(e.target.value);
+                              const updated = [...editingProduct.variants];
+                              updated[vIdx] = { ...updated[vIdx], price: Math.max(0, newPrice) };
+                              setEditingProduct({ ...editingProduct, variants: updated });
+                            }}
+                            className="w-full pl-5 pr-1 py-1 border rounded text-xs font-bold text-royal-950 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Short Tagline</label>
+                <input
+                  type="text"
+                  value={editingProduct.shortDescription || ''}
+                  onChange={(e) =>
+                    setEditingProduct({ ...editingProduct, shortDescription: e.target.value })
+                  }
+                  placeholder="e.g. 100% Pure Heritage Spice"
+                  className="w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Full Description</label>
+                <textarea
+                  rows={2}
+                  value={editingProduct.description || ''}
+                  onChange={(e) =>
+                    setEditingProduct({ ...editingProduct, description: e.target.value })
+                  }
+                  placeholder="Detailed notes on spices, culinary use..."
+                  className="w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                />
+              </div>
+
+              {editError && (
+                <p className="text-xs text-red-600 font-semibold flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{editError}</span>
+                </p>
+              )}
 
               <div className="pt-3 flex gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    onUpdateProduct(editingProduct);
-                    setEditingProduct(null);
+                  disabled={isUpdating}
+                  onClick={async () => {
+                    setIsUpdating(true);
+                    setEditError('');
+                    try {
+                      await onUpdateProduct(editingProduct);
+                      setEditingProduct(null);
+                    } catch (err: any) {
+                      setEditError(err.message || 'Failed to update product.');
+                    } finally {
+                      setIsUpdating(false);
+                    }
                   }}
-                  className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-2.5 rounded-xl text-sm"
+                  className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-2.5 rounded-xl text-sm disabled:opacity-60 flex items-center justify-center gap-2 cursor-pointer shadow"
                 >
-                  Save Changes
+                  {isUpdating ? 'Saving to Supabase...' : 'Save Changes'}
                 </button>
                 <button
                   type="button"
+                  disabled={isUpdating}
                   onClick={() => setEditingProduct(null)}
-                  className="px-4 py-2.5 border rounded-xl text-sm font-semibold text-gray-600"
+                  className="px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer"
                 >
                   Cancel
                 </button>
