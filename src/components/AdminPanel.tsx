@@ -1194,7 +1194,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <button
                           onClick={async () => {
                             if (isOrderDeleting) return;
-                            if (confirm(`Delete order record #${o.id}?`)) {
+                            let shouldDelete = true;
+                            try {
+                              if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+                                shouldDelete = window.confirm(`Delete order record #${o.id}?`);
+                              }
+                            } catch {
+                              shouldDelete = true;
+                            }
+                            if (shouldDelete) {
                               setDeletingOrderId(o.id);
                               try {
                                 await onDeleteOrder(o.id);

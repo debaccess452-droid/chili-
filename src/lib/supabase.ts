@@ -10,11 +10,43 @@ const rawAnonKey =
   (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) || 
   '';
 
-// Target project URL
-export const SUPABASE_URL = 
-  rawUrl && rawUrl !== 'https://your-project.supabase.co' && rawUrl !== 'https://placeholder.supabase.co'
-    ? rawUrl.trim().replace(/\/+$/, '')
-    : 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
+// Helper to validate valid HTTP/HTTPS URL
+function isValidHttpUrl(str: string): boolean {
+  if (!str) return false;
+  const trimmed = str.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    return false;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      parsed.hostname !== 'your-project.supabase.co' &&
+      parsed.hostname !== 'placeholder.supabase.co'
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Detect and correct swapped or misconfigured environment variables
+let candidateUrl = '';
+let candidateAnonKey = '';
+
+if (isValidHttpUrl(rawUrl)) {
+  candidateUrl = rawUrl.trim().replace(/\/+$/, '');
+  candidateAnonKey = rawAnonKey.trim();
+} else if (isValidHttpUrl(rawAnonKey)) {
+  // Credentials were swapped in environment (URL was placed in VITE_SUPABASE_ANON_KEY)
+  candidateUrl = rawAnonKey.trim().replace(/\/+$/, '');
+  candidateAnonKey = rawUrl.trim();
+} else {
+  candidateUrl = 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
+  candidateAnonKey = rawAnonKey.trim();
+}
+
+// Target project URL guaranteed to be a valid HTTP/HTTPS URL
+export const SUPABASE_URL = candidateUrl || 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
 
 // Helper to detect placeholder or misconfigured credentials (e.g. URLs accidentally set as keys)
 function isPlaceholder(value: string): boolean {
@@ -44,16 +76,16 @@ function isServiceRoleKey(key: string): boolean {
   return false;
 }
 
-if (isServiceRoleKey(rawAnonKey)) {
+if (isServiceRoleKey(candidateAnonKey)) {
   console.error(
     '[Supabase Security Alert] Service-role credentials (sb_secret / service_role) must NEVER be exposed in frontend client code. Only use the public anon key.'
   );
 }
 
 export const isSupabaseConfigured = Boolean(
-  rawAnonKey &&
-  !isPlaceholder(rawAnonKey) &&
-  !isServiceRoleKey(rawAnonKey)
+  candidateAnonKey &&
+  !isPlaceholder(candidateAnonKey) &&
+  !isServiceRoleKey(candidateAnonKey)
 );
 
 if (!isSupabaseConfigured) {
@@ -66,7 +98,7 @@ if (!isSupabaseConfigured) {
 // Single reusable Supabase client instance
 export const supabase = createClient(
   SUPABASE_URL,
-  isSupabaseConfigured ? rawAnonKey.trim() : 'public-anon-key-unconfigured',
+  isSupabaseConfigured ? candidateAnonKey : 'public-anon-key-unconfigured',
   {
     auth: {
       persistSession: true,
