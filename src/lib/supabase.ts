@@ -1,14 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Environment variables for Supabase - single source of truth
-const rawUrl = 
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) || 
-  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_URL) || 
-  '';
-const rawAnonKey = 
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) || 
-  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) || 
-  '';
+// Environment variables for Supabase - direct static access for Vite/Vercel build-time inlining
+const rawUrl = (
+  import.meta.env.VITE_SUPABASE_URL ||
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_URL) ||
+  ''
+).trim();
+
+const rawAnonKey = (
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) ||
+  ''
+).trim();
 
 // Helper to validate valid HTTP/HTTPS URL
 function isValidHttpUrl(str: string): boolean {
@@ -34,21 +37,23 @@ let candidateUrl = '';
 let candidateAnonKey = '';
 
 if (isValidHttpUrl(rawUrl)) {
-  candidateUrl = rawUrl.trim().replace(/\/+$/, '');
-  candidateAnonKey = rawAnonKey.trim();
+  candidateUrl = rawUrl.replace(/\/+$/, '');
+  candidateAnonKey = rawAnonKey;
 } else if (isValidHttpUrl(rawAnonKey)) {
   // Credentials were swapped in environment (URL was placed in VITE_SUPABASE_ANON_KEY)
-  candidateUrl = rawAnonKey.trim().replace(/\/+$/, '');
-  candidateAnonKey = rawUrl.trim();
+  candidateUrl = rawAnonKey.replace(/\/+$/, '');
+  candidateAnonKey = rawUrl;
 } else {
-  candidateUrl = 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
-  candidateAnonKey = rawAnonKey.trim();
+  candidateUrl = rawUrl && rawUrl.includes('supabase.co')
+    ? `https://${rawUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '')}`
+    : 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
+  candidateAnonKey = rawAnonKey;
 }
 
 // Target project URL guaranteed to be a valid HTTP/HTTPS URL
 export const SUPABASE_URL = candidateUrl || 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
 
-// Helper to detect placeholder or misconfigured credentials (e.g. URLs accidentally set as keys)
+// Helper to detect placeholder or misconfigured credentials
 function isPlaceholder(value: string): boolean {
   if (!value) return true;
   const lower = value.toLowerCase().trim();
@@ -61,8 +66,7 @@ function isPlaceholder(value: string): boolean {
     lower === 'your-anon-key-here' ||
     lower === 'anon_key' ||
     lower.startsWith('http://') ||
-    lower.startsWith('https://') ||
-    lower.includes('supabase.co')
+    lower.startsWith('https://')
   );
 }
 
@@ -70,10 +74,7 @@ function isPlaceholder(value: string): boolean {
 function isServiceRoleKey(key: string): boolean {
   if (!key) return false;
   const trimmed = key.trim();
-  if (trimmed.startsWith('sb_secret_') || trimmed.toLowerCase().includes('service_role')) {
-    return true;
-  }
-  return false;
+  return trimmed.startsWith('sb_secret_') || trimmed.toLowerCase().includes('service_role');
 }
 
 if (isServiceRoleKey(candidateAnonKey)) {
@@ -95,7 +96,7 @@ if (!isSupabaseConfigured) {
   );
 }
 
-// Single reusable Supabase client instance
+// Single reusable Supabase client instance used throughout the app
 export const supabase = createClient(
   SUPABASE_URL,
   isSupabaseConfigured ? candidateAnonKey : 'public-anon-key-unconfigured',
